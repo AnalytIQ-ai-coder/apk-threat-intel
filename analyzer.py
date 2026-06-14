@@ -16,7 +16,7 @@ from downloader import save_apk
 from manifest_parser import parse_apk
 from mailer import send_report
 from state import load_last_run, save_last_run
-from vt_client import check_sha256
+from vt_client import check_sha256, upload_file
 from ai_analyzer import assess_risk
 from dex_analyzer import analyze_dex
 from config import VT_API_KEY
@@ -180,7 +180,11 @@ def main():
             data["dex"] = analyze_dex(apk_path, own_package=data.get("package", ""))
 
             if VT_API_KEY:
-                data["vt"] = check_sha256(sha256)
+                vt = check_sha256(sha256)
+                if vt.get("not_found") and apk_path and os.path.exists(apk_path):
+                    print(f"[dim][~] Hash not in VT — uploading file for analysis...[/dim]")
+                    vt = upload_file(apk_path, sha256)
+                data["vt"] = vt
 
             print(f"[dim][~] Asking AI...[/dim]")
             data["ai"] = assess_risk(data)

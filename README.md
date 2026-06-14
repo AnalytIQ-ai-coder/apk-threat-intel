@@ -11,7 +11,7 @@ For each new APK sample:
 3. **Analyzes DEX bytecode** — extracts URLs, IPs, domains, targeted app package names, dangerous API usage
 4. **Checks certificate** — self-signed detection, validity, SHA1 fingerprint
 5. **Calculates entropy** — detects packed/encrypted files (entropy > 7.0)
-6. **Checks VirusTotal** — SHA256 lookup (no file upload), detection ratio, threat label
+6. **Checks VirusTotal** — SHA256 lookup first; if hash is unknown, uploads the file and polls for results
 7. **AI risk assessment** — local Ollama model rates risk as low/medium/high/critical with reasoning
 8. **Sends email report** — CSV attachment with all findings
 9. **Deletes downloaded files** — even on error
@@ -127,7 +127,7 @@ python analyzer.py
 ## Security notes
 
 - APK files are **never executed** — parsed as ZIP archives only
-- VirusTotal receives **only SHA256 hash**, not the file
+- VirusTotal receives **SHA256 hash first**; file is only uploaded when hash is unknown (new sample)
 - AI analysis runs **fully locally** via Ollama — no data sent externally
 - Downloaded files are **deleted after analysis**, even on error
 

@@ -13,6 +13,7 @@ def assess_risk(data: dict) -> dict:
     target_sdk = data.get("target_sdk", "unknown")
     permissions = data.get("permissions", [])
     vt = data.get("vt", {})
+    dex = data.get("dex", {})
 
     if vt.get("not_found"):
         vt_info = "Not found in VirusTotal database"
@@ -22,6 +23,26 @@ def assess_risk(data: dict) -> dict:
         m, t = vt.get("malicious", 0), vt.get("total", 0)
         label = vt.get("threat_label") or "none"
         vt_info = f"{m}/{t} antivirus engines detected as malicious, threat label: {label}"
+
+    targeted = dex.get("targeted_packages", [])
+    dangerous = dex.get("dangerous_apis", {})
+    urls = dex.get("urls", [])
+    ips = dex.get("ips", [])
+    high_entropy = dex.get("high_entropy_files", [])
+
+    dex_section = ""
+    if targeted:
+        dex_section += f"\nTargeted apps ({len(targeted)}):\n" + "\n".join(f"  - {p}" for p in targeted[:20])
+    if dangerous:
+        dex_section += "\nDangerous APIs detected:\n"
+        for cat, methods in dangerous.items():
+            dex_section += f"  [{cat}]: {', '.join(methods)}\n"
+    if urls:
+        dex_section += f"\nURLs in DEX ({len(urls)}):\n" + "\n".join(f"  - {u}" for u in urls[:10])
+    if ips:
+        dex_section += f"\nIPs in DEX: {', '.join(ips[:10])}"
+    if high_entropy:
+        dex_section += f"\nHigh-entropy files (possible packing): {', '.join(e['file'] for e in high_entropy)}"
 
     prompt = f"""You are a mobile malware analyst. Analyze this Android APK and assess whether it is malicious or suspicious.
 
@@ -33,7 +54,7 @@ SHA256: {sha256}
 VirusTotal: {vt_info}
 Permissions ({len(permissions)}):
 {chr(10).join(f"  - {p}" for p in permissions) if permissions else "  none"}
-
+{dex_section}
 Respond in this exact format:
 RISK: <low|medium|high|critical>
 REASON: <2-3 sentences explaining your assessment>"""

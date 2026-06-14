@@ -9,7 +9,7 @@ from androguard.core.dex import DEX
 _URL_RE = re.compile(r'https?://[^\s\'"<>]{6,}', re.IGNORECASE)
 _IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b')
 _DOMAIN_RE = re.compile(
-    r'\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|ru|cn|tk|top|xyz|info|biz|co|app|dev)\b',
+    r'\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|ru|cn|tk|top|xyz|info|biz|co|dev)\b',
     re.IGNORECASE,
 )
 _PKG_RE = re.compile(r'\b([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,})\b')
@@ -20,6 +20,14 @@ _DOMAIN_WHITELIST = {
     "googleapis.com", "google.com", "facebook.com", "amazon.com",
     "crashlytics.com", "appsflyer.com", "adjust.com",
 }
+
+# Android/Java package name prefixes that look like domains but aren't
+_JAVA_PACKAGE_PREFIXES = (
+    "android.", "com.android.", "com.google.android.", "dalvik.",
+    "java.", "javax.", "kotlin.", "kotlinx.", "androidx.",
+    "org.apache.", "org.json.", "org.xml.", "org.w3c.",
+    "sun.", "libcore.", "okhttp3.", "retrofit2.",
+)
 
 # ── Dangerous API signatures ──────────────────────────────────────────────────
 _DANGEROUS_APIS = {
@@ -73,7 +81,10 @@ def _shannon_entropy(data: bytes) -> float:
 
 
 def _is_whitelisted(value: str) -> bool:
-    return any(w in value for w in _DOMAIN_WHITELIST)
+    if any(w in value for w in _DOMAIN_WHITELIST):
+        return True
+    lower = value.lower()
+    return any(lower.startswith(p) for p in _JAVA_PACKAGE_PREFIXES)
 
 
 def _extract_dex_strings(apk_bytes: bytes) -> list[str]:
