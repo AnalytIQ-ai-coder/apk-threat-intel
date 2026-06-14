@@ -1,0 +1,23 @@
+# Credentials - NEVER commit
+.env
+
+# Output data - may contain malware hashes/results
+output/
+results/
+samples/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# IDE
+.idea/
+.vscode/
+
+# Downloaded APKs (just in case)
+*.apk
+*.xapk
