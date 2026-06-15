@@ -57,13 +57,15 @@ def _build_csv(results: list[dict]) -> bytes:
     writer = csv.writer(buf)
     writer.writerow([
         "sha256", "package", "app_name", "version_name", "version_code",
-        "min_sdk", "target_sdk", "permissions",
+        "min_sdk", "target_sdk", "is_multidex", "permissions",
+        "declared_permissions", "providers", "autostart_actions", "suspicious_actions",
         "vt_detections", "vt_total", "vt_label", "vt_link",
         "ai_risk", "ai_reason",
         "cert_self_signed", "cert_sha1", "cert_expired",
+        "malware_frameworks", "packers", "hidden_dex",
         "targeted_apps_count", "targeted_apps",
         "dangerous_apis",
-        "urls", "ips",
+        "urls", "ips", "decoded_b64_iocs",
         "high_entropy_files",
     ])
     for r in results:
@@ -80,7 +82,12 @@ def _build_csv(results: list[dict]) -> bytes:
             r.get("version_code"),
             r.get("min_sdk"),
             r.get("target_sdk"),
+            r.get("is_multidex", ""),
             "; ".join(r.get("permissions", [])),
+            "; ".join(r.get("declared_permissions", [])),
+            "; ".join(r.get("providers", [])),
+            "; ".join(r.get("autostart_actions", [])),
+            "; ".join(r.get("suspicious_actions", [])),
             vt.get("malicious", ""),
             vt.get("total", ""),
             vt.get("threat_label", ""),
@@ -90,11 +97,15 @@ def _build_csv(results: list[dict]) -> bytes:
             cert.get("self_signed", ""),
             cert.get("sha1", ""),
             cert.get("expired", ""),
+            "; ".join(dex.get("malware_frameworks", [])),
+            "; ".join(dex.get("packers", [])),
+            "; ".join(h["file"] for h in dex.get("hidden_dex", [])),
             len(dex.get("targeted_packages", [])),
             "; ".join(dex.get("targeted_packages", [])),
             "; ".join(dex.get("dangerous_apis", {}).keys()),
             "; ".join(dex.get("urls", [])),
             "; ".join(dex.get("ips", [])),
+            "; ".join(dex.get("decoded_b64_iocs", [])),
             "; ".join(e["file"] for e in dex.get("high_entropy_files", [])),
         ])
     return buf.getvalue().encode("utf-8")

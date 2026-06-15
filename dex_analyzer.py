@@ -1,3 +1,4 @@
+import base64
 import math
 import re
 import zipfile
@@ -152,6 +153,92 @@ def _find_dangerous_apis(strings: list[str]) -> dict:
     return found
 
 
+# ── Known malware frameworks / SDKs ──────────────────────────────────────────
+_MALWARE_FRAMEWORKS = {
+    "Cerberus": ["cerberus", "com.pns.", "cerbero"],
+    "Anubis": ["anubis", "com.google.anubis"],
+    "SpyNote": ["spynote", "com.craxsrat"],
+    "Hydra": ["hydra", "com.hydra"],
+    "BankBot": ["bankbot", "com.android.protect"],
+    "Alien": ["alien", "com.alien"],
+    "Gustuff": ["gustuff"],
+    "Sharkbot": ["sharkbot", "com.sharkbot"],
+    "Ermac": ["ermac"],
+    "Octo": ["octo", "com.octo"],
+    "Hook": ["hookbot", "com.hook"],
+    "Mamont": ["mamont", "pwtrick"],
+}
+
+# ── Suspicious class name patterns ────────────────────────────────────────────
+_SUSPICIOUS_CLASS_PATTERNS = [
+    re.compile(r'com\.[a-z]{6,12}\.[a-z]{6,12}$'),   # random-looking package
+]
+
+_KNOWN_PACKER_CLASSES = [
+    "com.stub", "com.shell", "com.secshell", "com.qihoo",
+    "com.tencent.StubShell", "com.wrapper", "lanchon.dexpatcher",
+    "com.bangcle", "com.ieee", "com.protect",
+]
+
+
+def _detect_malware_frameworks(strings: list[str]) -> list[str]:
+    all_text = "\n".join(strings).lower()
+    found = []
+    for name, keywords in _MALWARE_FRAMEWORKS.items():
+        if any(kw in all_text for kw in keywords):
+            found.append(name)
+    return found
+
+
+def _detect_packers(strings: list[str]) -> list[str]:
+    all_text = "\n".join(strings)
+    found = []
+    for packer in _KNOWN_PACKER_CLASSES:
+        if packer in all_text:
+            found.append(packer)
+    return found
+
+
+def _find_hidden_dex(apk_bytes: bytes) -> list[dict]:
+    """Find DEX files disguised as other file types in assets/."""
+    hidden = []
+    DEX_MAGIC = b"dex\n"
+    try:
+        with zipfile.ZipFile(BytesIO(apk_bytes)) as z:
+            for name in z.namelist():
+                if re.match(r'classes\d*\.dex', name):
+                    continue
+                if any(name.endswith(ext) for ext in (".dex", ".apk", ".jar")):
+                    continue
+                try:
+                    data = z.read(name)
+                    if data[:4] == DEX_MAGIC:
+                        hidden.append({"file": name, "size": len(data)})
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return hidden
+
+
+def _decode_base64_strings(strings: list[str]) -> list[str]:
+    """Try to decode suspicious Base64 strings — URLs and IPs are most valuable."""
+    decoded = []
+    b64_re = re.compile(r'^[A-Za-z0-9+/]{20,}={0,2}$')
+    for s in strings:
+        s = s.strip()
+        if not b64_re.match(s):
+            continue
+        try:
+            raw = base64.b64decode(s)
+            text = raw.decode("utf-8", errors="ignore")
+            if _URL_RE.search(text) or _IP_RE.search(text):
+                decoded.append(text.strip())
+        except Exception:
+            continue
+    return decoded[:20]
+
+
 def _find_targeted_packages(strings: list[str], own_package: str = "") -> list[str]:
     candidates = set()
     banking_keywords = {
@@ -193,6 +280,13 @@ def analyze_dex(apk_path: str, own_package: str = "") -> dict:
             if not _is_whitelisted(m):
                 domains.add(m)
 
+    decoded_b64 = _decode_base64_strings(strings)
+    for text in decoded_b64:
+        for m in _URL_RE.findall(text):
+            urls.add(f"[b64] {m}")
+        for m in _IP_RE.findall(text):
+            ips.add(f"[b64] {m}")
+
     return {
         "urls": sorted(urls),
         "ips": sorted(ips),
@@ -201,5 +295,9 @@ def analyze_dex(apk_path: str, own_package: str = "") -> dict:
         "high_entropy_files": infra["high_entropy_files"],
         "dangerous_apis": _find_dangerous_apis(strings),
         "targeted_packages": _find_targeted_packages(strings, own_package),
+        "malware_frameworks": _detect_malware_frameworks(strings),
+        "packers": _detect_packers(strings),
+        "hidden_dex": _find_hidden_dex(apk_bytes),
+        "decoded_b64_iocs": decoded_b64,
         "dex_string_count": len(strings),
     }

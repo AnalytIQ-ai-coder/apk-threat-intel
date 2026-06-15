@@ -1,5 +1,6 @@
 import json
 import os
+import traceback
 from datetime import datetime, timezone
 
 from loguru import logger
@@ -97,13 +98,34 @@ def print_result(data: dict):
             vt_str = f"[{color}]{m}/{t} engines{label}[/{color}]\n{vt['link']}"
         table.add_row("VirusTotal", vt_str)
 
+    # Manifest extras
+    if data.get("autostart_actions"):
+        table.add_row("[red]Autostart[/red]", "\n".join(data["autostart_actions"]))
+    if data.get("suspicious_actions"):
+        table.add_row("[yellow]Suspicious actions[/yellow]", "\n".join(data["suspicious_actions"]))
+    if data.get("declared_permissions"):
+        table.add_row("Declared permissions", "\n".join(data["declared_permissions"]))
+    if data.get("providers"):
+        table.add_row("Content providers", "\n".join(data["providers"]))
+    if data.get("is_multidex"):
+        table.add_row("[yellow]MultiDex[/yellow]", "YES")
+
     # DEX analysis
     dex = data.get("dex")
     if dex and not dex.get("error"):
+        if dex.get("malware_frameworks"):
+            table.add_row("[bold red]Malware family[/bold red]", ", ".join(dex["malware_frameworks"]))
+        if dex.get("packers"):
+            table.add_row("[red]Packers detected[/red]", "\n".join(dex["packers"]))
+        if dex.get("hidden_dex"):
+            hidden_str = "\n".join(f"{h['file']} ({h['size']} B)" for h in dex["hidden_dex"])
+            table.add_row("[bold red]Hidden DEX[/bold red]", hidden_str)
         if dex.get("urls"):
             table.add_row("URLs in DEX", "\n".join(dex["urls"]))
         if dex.get("ips"):
             table.add_row("IPs in DEX", "\n".join(dex["ips"]))
+        if dex.get("decoded_b64_iocs"):
+            table.add_row("[yellow]Decoded Base64 IOCs[/yellow]", "\n".join(dex["decoded_b64_iocs"]))
         if dex.get("domains"):
             table.add_row("Domains in DEX", "\n".join(dex["domains"]))
         if dex.get("targeted_packages"):
@@ -194,6 +216,7 @@ def main():
 
         except Exception as e:
             print(f"[red][!] Error processing {sha256[:16]}: {e}[/red]")
+            traceback.print_exc()
 
         finally:
             if apk_path and os.path.exists(apk_path):
