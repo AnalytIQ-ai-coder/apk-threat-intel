@@ -76,7 +76,7 @@ def _parse_intent_filters(apk: APK) -> dict:
     # Also scan raw manifest XML for actions
     try:
         manifest_xml = apk.get_android_manifest_xml()
-        xml_str = str(manifest_xml) if manifest_xml else ""
+        xml_str = str(manifest_xml) if manifest_xml is not None else ""
         for action in _AUTOSTART_ACTIONS:
             if action in xml_str and action not in autostart:
                 autostart.append(action)

@@ -7,36 +7,38 @@ Automated Android APK threat analysis pipeline. Downloads samples from [MWDB (CE
 For each new APK sample:
 
 1. **Downloads** from MWDB (incremental — only new samples since last run)
-2. **Parses AndroidManifest.xml** — package name, permissions, activities, services, receivers
-3. **Analyzes DEX bytecode** — extracts URLs, IPs, domains, targeted app package names, dangerous API usage
-4. **Checks certificate** — self-signed detection, validity, SHA1 fingerprint
-5. **Calculates entropy** — detects packed/encrypted files (entropy > 7.0)
-6. **Checks VirusTotal** — SHA256 lookup first; if hash is unknown, uploads the file and polls for results
-7. **MobSF static analysis** — security score, trackers, manifest issues, dangerous permissions (optional, requires Docker)
-8. **AI risk assessment** — local Ollama model rates risk as low/medium/high/critical with reasoning
-9. **Sends email report** — CSV attachment with all findings
+2. **Parses AndroidManifest.xml** — package, permissions, activities, services, receivers, content providers, intent filters (autostart/suspicious actions), declared permissions, MultiDex detection
+3. **Analyzes DEX bytecode** — URLs, IPs, domains, targeted app package names, dangerous API categories, Shannon entropy, native libs, malware framework fingerprints (Mamont, Cerberus, Anubis, etc.), packer detection, hidden DEX files, Base64-encoded IOCs
+4. **Checks certificate** — self-signed detection, expiry, subject, SHA1 fingerprint
+5. **Checks VirusTotal** — SHA256 lookup first; uploads file and polls for results if hash is unknown
+6. **MobSF static analysis** — security score, trackers, manifest issues, dangerous permissions (optional, requires Docker)
+7. **MobSF dynamic analysis** — network calls, SMS sent, files accessed, crypto operations (optional, requires Android emulator)
+8. **AI risk assessment** — local Ollama model rates risk as low/medium/high/critical with reasoning (no data sent externally)
+9. **Sends email report** — HTML body summary + CSV attachment with 35+ fields per sample
 10. **Deletes downloaded files** — even on error
 
 ## Example output
 
 ```
-┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ Field          ┃ Value                                        ┃
-┡━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ Package        │ ru.m7wj6tqqcf.dtcmelbo                       │
-│ App name       │ Max_video                                     │
-│ Certificate    │ Self-signed: YES (Android Debug Key)         │
-│ AI Risk        │ CRITICAL                                      │
-│                │ trojan.mamont/pwtrick — banking overlay...   │
-│ VirusTotal     │ 13/75 engines                                 │
-│ Targeted apps  │ ru.alfabank.mobile.android                   │
-│                │ com.idamob.tinkoff.android                    │
-│                │ ru.vtb24.mobilebanking.android (+ 26 more)   │
-│ Dangerous APIs │ SMS abuse: sendTextMessage                   │
-│                │ Account theft: AccountManager                 │
-│                │ Overlay attack: TYPE_APPLICATION_OVERLAY      │
-│ Permissions    │ android.permission.INTERNET                  │
-└━━━━━━━━━━━━━━━━┴━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┘
+┏━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Field                ┃ Value                                                     ┃
+┡━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ Package              │ ru.aj7ees.es788                                           │
+│ App name             │ Max_video                                                 │
+│ Certificate          │ Self-signed: YES (Android Debug Key)                     │
+│ AI Risk              │ CRITICAL — trojan.mamont/pwtrick, banking overlay         │
+│ VirusTotal           │ 13/75 engines                                             │
+│ MobSF Score          │ 49/100                                                    │
+│ Manifest issues      │ clear_text_traffic, exported unprotected service          │
+│ Autostart            │ BOOT_COMPLETED, LOCKED_BOOT_COMPLETED                    │
+│ Suspicious actions   │ SMS_RECEIVED, SCREEN_ON, CONNECTIVITY_CHANGE             │
+│ Malware family       │ Mamont                                                    │
+│ Targeted apps        │ ru.alfabank.mobile.android (+ 29 more Russian banks)     │
+│ Dangerous APIs       │ SMS abuse: sendTextMessage                                │
+│                      │ Account theft: AccountManager, getAuthToken               │
+│                      │ Root: su, Encryption: AES                                 │
+│ Dangerous perms      │ RECEIVE_SMS, SEND_SMS, READ_SMS, CALL_PHONE              │
+└━━━━━━━━━━━━━━━━━━━━━━┴━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┘
 ```
 
 ## Requirements
@@ -154,10 +156,13 @@ MOBSF_DYNAMIC=false
 ```
 
 **Dynamic analysis (requires Android emulator):**
-1. Install Android Studio and create an AVD (API 28, x86)
+1. Install Android Studio and create an AVD — use **Android Open Source** image (no Google Play), API 29, x86
 2. Start the emulator
-3. Verify ADB sees it: `adb devices`
-4. Set `MOBSF_DYNAMIC=true` in `.env`
+3. Enable root: `adb root && adb remount`
+4. Verify ADB sees it: `adb devices`
+5. Set `MOBSF_DYNAMIC=true` in `.env`
+
+> **Note:** Dynamic analysis results may be sparse for sophisticated malware (e.g. Mamont trojan) that waits for C2 commands before acting. The 60-second analysis window is sufficient for adware and droppers.
 
 ## Automating (Windows Task Scheduler)
 
