@@ -67,12 +67,17 @@ def _build_csv(results: list[dict]) -> bytes:
         "dangerous_apis",
         "urls", "ips", "decoded_b64_iocs",
         "high_entropy_files",
+        "mobsf_score", "mobsf_trackers", "mobsf_manifest_issues",
+        "mobsf_network_calls", "mobsf_sms_sent",
     ])
     for r in results:
         vt = r.get("vt") or {}
         ai = r.get("ai") or {}
         cert = r.get("cert") or {}
         dex = r.get("dex") or {}
+        mobsf = r.get("mobsf") or {}
+        mobsf_static = mobsf.get("static") or {}
+        mobsf_dynamic = mobsf.get("dynamic") or {}
 
         writer.writerow([
             r.get("sha256"),
@@ -107,6 +112,11 @@ def _build_csv(results: list[dict]) -> bytes:
             "; ".join(dex.get("ips", [])),
             "; ".join(dex.get("decoded_b64_iocs", [])),
             "; ".join(e["file"] for e in dex.get("high_entropy_files", [])),
+            mobsf_static.get("mobsf_score", ""),
+            "; ".join(mobsf_static.get("trackers", [])),
+            "; ".join(mobsf_static.get("manifest_analysis", [])[:5]),
+            "; ".join(f"{c['method']} {c['url']}" for c in mobsf_dynamic.get("network_calls", [])[:5]),
+            "; ".join(str(s) for s in mobsf_dynamic.get("sms_sent", [])),
         ])
     return buf.getvalue().encode("utf-8")
 

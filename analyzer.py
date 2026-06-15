@@ -20,7 +20,8 @@ from state import load_last_run, save_last_run
 from vt_client import check_sha256, upload_file
 from ai_analyzer import assess_risk
 from dex_analyzer import analyze_dex
-from config import VT_API_KEY
+from mobsf_client import analyze as mobsf_analyze
+from config import VT_API_KEY, MOBSF_API_KEY, MOBSF_DYNAMIC
 
 console = rich_console.Console()
 
@@ -97,6 +98,32 @@ def print_result(data: dict):
             color = "red" if m > 0 else "green"
             vt_str = f"[{color}]{m}/{t} engines{label}[/{color}]\n{vt['link']}"
         table.add_row("VirusTotal", vt_str)
+
+    # MobSF
+    mobsf = data.get("mobsf")
+    if mobsf and not mobsf.get("error"):
+        static = mobsf.get("static", {})
+        if static.get("mobsf_score") is not None:
+            score = static["mobsf_score"]
+            color = "green" if score >= 70 else "yellow" if score >= 40 else "red"
+            table.add_row("MobSF Score", f"[{color}]{score}/100[/{color}]")
+        if static.get("trackers"):
+            table.add_row("[yellow]Trackers[/yellow]", ", ".join(static["trackers"]))
+        if static.get("manifest_analysis"):
+            table.add_row("[red]Manifest issues[/red]", "\n".join(static["manifest_analysis"][:5]))
+        if static.get("permissions", {}).get("dangerous"):
+            table.add_row("Dangerous perms", "\n".join(static["permissions"]["dangerous"][:10]))
+        dynamic = mobsf.get("dynamic", {})
+        if dynamic and not dynamic.get("error"):
+            if dynamic.get("network_calls"):
+                net_str = "\n".join(f"{c['method']} {c['url']}" for c in dynamic["network_calls"][:5])
+                table.add_row("[red]Network calls[/red]", net_str)
+            if dynamic.get("sms_sent"):
+                table.add_row("[bold red]SMS sent[/bold red]", "\n".join(str(s) for s in dynamic["sms_sent"]))
+            if dynamic.get("files_accessed"):
+                table.add_row("Files accessed", "\n".join(dynamic["files_accessed"][:5]))
+            if dynamic.get("crypto_operations"):
+                table.add_row("Crypto ops", "\n".join(str(c) for c in dynamic["crypto_operations"][:5]))
 
     # Manifest extras
     if data.get("autostart_actions"):
@@ -207,6 +234,10 @@ def main():
                     print(f"[dim][~] Hash not in VT — uploading file for analysis...[/dim]")
                     vt = upload_file(apk_path, sha256)
                 data["vt"] = vt
+
+            if MOBSF_API_KEY:
+                print(f"[dim][~] MobSF analysis...[/dim]")
+                data["mobsf"] = mobsf_analyze(apk_path, dynamic=MOBSF_DYNAMIC)
 
             print(f"[dim][~] Asking AI...[/dim]")
             data["ai"] = assess_risk(data)

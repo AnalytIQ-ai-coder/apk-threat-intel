@@ -12,9 +12,10 @@ For each new APK sample:
 4. **Checks certificate** — self-signed detection, validity, SHA1 fingerprint
 5. **Calculates entropy** — detects packed/encrypted files (entropy > 7.0)
 6. **Checks VirusTotal** — SHA256 lookup first; if hash is unknown, uploads the file and polls for results
-7. **AI risk assessment** — local Ollama model rates risk as low/medium/high/critical with reasoning
-8. **Sends email report** — CSV attachment with all findings
-9. **Deletes downloaded files** — even on error
+7. **MobSF static analysis** — security score, trackers, manifest issues, dangerous permissions (optional, requires Docker)
+8. **AI risk assessment** — local Ollama model rates risk as low/medium/high/critical with reasoning
+9. **Sends email report** — CSV attachment with all findings
+10. **Deletes downloaded files** — even on error
 
 ## Example output
 
@@ -45,6 +46,8 @@ For each new APK sample:
 - MWDB account — [mwdb.cert.pl](https://mwdb.cert.pl)
 - VirusTotal account — [virustotal.com](https://www.virustotal.com) (free tier: 500 req/day)
 - Gmail account with App Password
+- **Optional:** [Docker](https://www.docker.com) for MobSF static analysis
+- **Optional:** Android emulator (Android Studio AVD or Genymotion) for MobSF dynamic analysis
 
 ## Installation
 
@@ -93,6 +96,9 @@ ollama pull qwen2.5:14b
 | `EMAIL_PASSWORD` | Gmail App Password — [generate here](https://myaccount.google.com/apppasswords) |
 | `EMAIL_RECIPIENT` | Recipient email address |
 | `VT_API_KEY` | VirusTotal API key (free account) |
+| `MOBSF_URL` | MobSF URL (default: `http://localhost:8000`) |
+| `MOBSF_API_KEY` | MobSF REST API key — visible in MobSF web UI top-right corner |
+| `MOBSF_DYNAMIC` | Set to `true` to enable dynamic analysis (requires Android emulator) |
 
 > **Never commit `.env`** — it is in `.gitignore`.
 
@@ -112,10 +118,11 @@ python analyzer.py
 ├── analyzer.py          # Main entry point
 ├── mwdb_client.py       # MWDB API client
 ├── downloader.py        # APK download
-├── manifest_parser.py   # AndroidManifest.xml parser (androguard)
+├── manifest_parser.py   # AndroidManifest.xml parser + intent filters
 ├── cert_analyzer.py     # Certificate analysis
-├── dex_analyzer.py      # DEX bytecode analysis (URLs, APIs, entropy, targeted apps)
-├── vt_client.py         # VirusTotal SHA256 lookup
+├── dex_analyzer.py      # DEX analysis (URLs, APIs, entropy, malware frameworks, hidden DEX)
+├── vt_client.py         # VirusTotal lookup + file upload fallback
+├── mobsf_client.py      # MobSF static/dynamic analysis (optional)
 ├── ai_analyzer.py       # Local AI risk assessment via Ollama
 ├── mailer.py            # Email report with CSV
 ├── state.py             # Last run timestamp
@@ -130,6 +137,27 @@ python analyzer.py
 - VirusTotal receives **SHA256 hash first**; file is only uploaded when hash is unknown (new sample)
 - AI analysis runs **fully locally** via Ollama — no data sent externally
 - Downloaded files are **deleted after analysis**, even on error
+
+## MobSF setup (optional)
+
+MobSF adds security scoring, tracker detection, and manifest analysis on top of the built-in static analysis.
+
+**Static analysis only (no emulator needed):**
+```bash
+docker run -it --rm -p 8000:8000 opensecurity/mobile-security-framework-mobsf
+```
+Open http://localhost:8000, copy the API key from the top-right corner, add to `.env`:
+```
+MOBSF_URL=http://localhost:8000
+MOBSF_API_KEY=<your_key>
+MOBSF_DYNAMIC=false
+```
+
+**Dynamic analysis (requires Android emulator):**
+1. Install Android Studio and create an AVD (API 28, x86)
+2. Start the emulator
+3. Verify ADB sees it: `adb devices`
+4. Set `MOBSF_DYNAMIC=true` in `.env`
 
 ## Automating (Windows Task Scheduler)
 
