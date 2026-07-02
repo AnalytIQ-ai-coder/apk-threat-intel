@@ -14,7 +14,7 @@ os.makedirs("output", exist_ok=True)
 
 from mwdb_client import get_client
 from downloader import save_apk
-from manifest_parser import parse_apk
+from manifest_parser import parse_apk_timeout
 from mailer import send_report
 from state import load_last_run, save_last_run
 from vt_client import check_sha256, upload_file
@@ -219,7 +219,7 @@ def main():
         apk_path = None
         try:
             apk_path = save_apk(obj)
-            data = parse_apk(apk_path)
+            data = parse_apk_timeout(apk_path, timeout=90)
 
             data["sha256"] = sha256
             data["filename"] = filename
