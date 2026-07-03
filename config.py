@@ -16,5 +16,10 @@ MOBSF_URL = os.getenv("MOBSF_URL", "http://localhost:8000")
 MOBSF_API_KEY = os.getenv("MOBSF_API_KEY")
 MOBSF_DYNAMIC = os.getenv("MOBSF_DYNAMIC", "false").lower() == "true"
 
+# abuse.ch (ThreatFox / URLhaus / MalwareBazaar) — Auth-Key opcjonalny,
+# API działa też bez klucza z niższym limitem zapytań
+ABUSECH_API_KEY = os.getenv("ABUSECH_API_KEY")
+ENRICHMENT_ENABLED = os.getenv("ENRICHMENT_ENABLED", "true").lower() == "true"
+
 if not MWDB_API_KEY:
     raise ValueError("Missing MWDB_API_KEY in .env")

@@ -21,11 +21,12 @@ from vt_client import check_sha256, upload_file
 from ai_analyzer import assess_risk
 from dex_analyzer import analyze_dex
 from mobsf_client import analyze as mobsf_analyze
-from config import VT_API_KEY, MOBSF_API_KEY, MOBSF_DYNAMIC
+from config import VT_API_KEY, MOBSF_API_KEY, MOBSF_DYNAMIC, ENRICHMENT_ENABLED
 from ioc_extractor import extract_iocs
 import threat_db
 import yara_scanner
 import report_export
+import enrichment
 
 console = rich_console.Console()
 
@@ -204,6 +205,24 @@ def print_result(data: dict):
         if drop_lines:
             table.add_row("[red]Dead-drop resolvers[/red]", "\n".join(drop_lines))
 
+    # Wzbogacanie zewnętrzne — abuse.ch (ThreatFox/URLhaus/MalwareBazaar)
+    enrich = data.get("enrichment") or {}
+    mb = enrich.get("malwarebazaar") or {}
+    if mb.get("known"):
+        table.add_row(
+            "[bold red]MalwareBazaar[/bold red]",
+            f"znany jako: {mb.get('signature') or 'brak sygnatury'}\n{mb.get('link', '')}",
+        )
+    if enrich.get("threatfox_hits"):
+        tf_lines = [
+            f"{h['ioc']} — {', '.join(x.get('malware') or '?' for x in h.get('hits', []))}"
+            for h in enrich["threatfox_hits"]
+        ]
+        table.add_row("[bold red]ThreatFox[/bold red]", "\n".join(tf_lines))
+    if enrich.get("urlhaus_hits"):
+        uh_lines = [f"{h['url']} — {h.get('threat', '?')} ({h.get('status', '?')})" for h in enrich["urlhaus_hits"]]
+        table.add_row("[bold red]URLhaus[/bold red]", "\n".join(uh_lines))
+
     # Korelacje — ten sam cert/IOC widziany w poprzednich runach
     correlations = data.get("correlations") or []
     if correlations:
@@ -257,6 +276,15 @@ def main():
             print(f"\n[dim][~] Skipping {filename} (not .apk)[/dim]")
             continue
 
+        existing = threat_db.get_sample(sha256) if sha256 != "?" else None
+        if existing:
+            threat_db.mark_duplicate(sha256, filename)
+            print(
+                f"\n[dim][~] Skipping {filename} ({sha256[:16]}...) — duplikat próbki "
+                f"już przeanalizowanej jako {existing.get('filename')}[/dim]"
+            )
+            continue
+
         print(f"\n[bold blue][~] Processing {filename} ({sha256[:16]}...)[/bold blue]")
 
         apk_path = None
@@ -287,6 +315,10 @@ def main():
             print(f"[dim][~] Asking AI...[/dim]")
             data["ai"] = assess_risk(data)
 
+            if ENRICHMENT_ENABLED:
+                print(f"[dim][~] Sprawdzam IOC w ThreatFox/URLhaus/MalwareBazaar...[/dim]")
+                data["enrichment"] = enrichment.enrich(data, data.get("iocs") or {})
+
             correlation = threat_db.store_sample(data, data.get("iocs") or {})
             data["correlations"] = correlation.get("correlations", [])
 
@@ -316,7 +348,8 @@ def main():
         db_stats = threat_db.stats()
         print(
             f"[dim][~] Baza threat-intel: {db_stats['samples']} próbek, "
-            f"{db_stats['unique_iocs']} unikalnych IOC, {db_stats['unique_certs']} certów[/dim]"
+            f"{db_stats['unique_iocs']} unikalnych IOC, {db_stats['unique_certs']} certów, "
+            f"{db_stats['duplicates_skipped']} duplikatów pominiętych łącznie[/dim]"
         )
 
         reused = threat_db.top_reused_iocs(limit=5)
