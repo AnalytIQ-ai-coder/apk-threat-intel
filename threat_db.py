@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS samples (
     malware_families TEXT,
     ai_risk TEXT,
     first_seen TEXT,
-    upload_time TEXT
+    upload_time TEXT,
+    duplicate_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS iocs (
@@ -57,6 +58,11 @@ def _connect():
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        # migracja dla baz utworzonych przed dodaniem duplicate_count
+        try:
+            conn.execute("ALTER TABLE samples ADD COLUMN duplicate_count INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
 
 def _now() -> str:
@@ -180,4 +186,62 @@ def stats() -> dict:
         n_certs = conn.execute(
             "SELECT COUNT(DISTINCT cert_sha1) FROM samples WHERE cert_sha1 IS NOT NULL"
         ).fetchone()[0]
-        return {"samples": n_samples, "unique_iocs": n_iocs, "unique_certs": n_certs}
+        n_dupes = conn.execute(
+            "SELECT COALESCE(SUM(duplicate_count), 0) FROM samples"
+        ).fetchone()[0]
+        return {
+            "samples": n_samples, "unique_iocs": n_iocs,
+            "unique_certs": n_certs, "duplicates_skipped": n_dupes,
+        }
+
+
+def get_sample(sha256: str) -> dict | None:
+    """Zwraca zapisaną próbkę po hashu — używane do dedupu przed pełną analizą."""
+    init_db()
+    with _connect() as conn:
+        row = conn.execute("SELECT * FROM samples WHERE sha256=?", (sha256,)).fetchone()
+        return dict(row) if row else None
+
+
+def mark_duplicate(sha256: str, filename: str) -> None:
+    """Odnotowuje, że dana próbka pojawiła się ponownie pod inną nazwą pliku,
+    bez powtarzania pełnej analizy (VT/MobSF/AI)."""
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE samples SET duplicate_count = COALESCE(duplicate_count, 0) + 1 WHERE sha256=?",
+            (sha256,),
+        )
+
+
+def recent_samples(limit: int = 50) -> list[dict]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM samples ORDER BY first_seen DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_iocs_for_sample(sha256: str) -> list[dict]:
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT ioc_type, value, first_seen FROM iocs WHERE sha256=? ORDER BY ioc_type",
+            (sha256,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def search_ioc(term: str, limit: int = 50) -> list[dict]:
+    """Szuka IOC po fragmencie wartości i zwraca próbki, w których wystąpił."""
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT i.ioc_type, i.value, s.sha256, s.filename, s.package
+               FROM iocs i JOIN samples s ON s.sha256 = i.sha256
+               WHERE i.value LIKE ? ESCAPE '\\'
+               ORDER BY i.value LIMIT ?""",
+            (f"%{term}%", limit),
+        ).fetchall()
+        return [dict(r) for r in rows]

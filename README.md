@@ -14,8 +14,14 @@ For each new APK sample:
 6. **MobSF static analysis** — security score, trackers, manifest issues, dangerous permissions (optional, requires Docker)
 7. **MobSF dynamic analysis** — network calls, SMS sent, files accessed, crypto operations (optional, requires Android emulator)
 8. **AI risk assessment** — local Ollama model rates risk as low/medium/high/critical with reasoning (no data sent externally)
-9. **Sends email report** — HTML body summary + CSV attachment with 35+ fields per sample
-10. **Deletes downloaded files** — even on error
+9. **YARA scan** — custom rules for campaigns identified in previous runs (fake MetaMask/Ermac/Octo, RU bankers, USDT clippers, etc.), see `yara_rules/`
+10. **IOC extraction** — crypto wallets (BTC/ETH/TRON), operator contacts (Telegram/WhatsApp), Discord exfil webhooks, dead-drop C2 resolvers (GitHub, Firebase RTDB, Cloudflare Pages)
+11. **External enrichment** — checks sample hash and extracted IOCs against abuse.ch (MalwareBazaar, ThreatFox, URLhaus) to see if they're already publicly known
+12. **Deduplication** — skips full re-analysis (VT/MobSF/AI/apktool) for samples already seen under a different filename
+13. **Threat-intel database** — every sample and IOC is stored in `output/threat_intel.db` (SQLite), with correlation across runs (shared signing certificate, reused IOC)
+14. **Exports** — CSV, MISP-compatible event JSON, and ready-to-send abuse report text per run
+15. **Sends email report** — HTML body summary + CSV attachment with 35+ fields per sample
+16. **Deletes downloaded files** — even on error
 
 ## Example output
 
@@ -101,6 +107,8 @@ ollama pull qwen2.5:14b
 | `MOBSF_URL` | MobSF URL (default: `http://localhost:8000`) |
 | `MOBSF_API_KEY` | MobSF REST API key — visible in MobSF web UI top-right corner |
 | `MOBSF_DYNAMIC` | Set to `true` to enable dynamic analysis (requires Android emulator) |
+| `ABUSECH_API_KEY` | Optional Auth-Key for abuse.ch (MalwareBazaar/ThreatFox/URLhaus) — works without one at a lower rate limit |
+| `ENRICHMENT_ENABLED` | Set to `false` to skip abuse.ch lookups (default: `true`) |
 
 > **Never commit `.env`** — it is in `.gitignore`.
 
@@ -113,6 +121,17 @@ python analyzer.py
 - **First run** — fetches all APKs uploaded today
 - **Next runs** — fetches only APKs uploaded since last run
 - State saved in `output/state.json`
+- Results also saved to `output/results.json`, `output/threat_intel.db`, `output/iocs.csv`, `output/misp_event.json`, `output/abuse_reports.txt`
+
+### Dashboard
+
+Browse the accumulated threat-intel database (samples, IOC correlations, search) in a browser:
+
+```bash
+python dashboard.py
+```
+
+Opens at http://localhost:5001 — overview stats, recent samples, most-reused IOCs across runs, sample detail view, and an IOC search box.
 
 ## Project structure
 
@@ -126,6 +145,13 @@ python analyzer.py
 ├── vt_client.py         # VirusTotal lookup + file upload fallback
 ├── mobsf_client.py      # MobSF static/dynamic analysis (optional)
 ├── ai_analyzer.py       # Local AI risk assessment via Ollama
+├── ioc_extractor.py     # Crypto wallets, operator contacts, dead-drop resolvers
+├── yara_scanner.py      # Custom YARA rule matching
+├── yara_rules/          # Rules for campaigns identified in previous runs
+├── enrichment.py        # abuse.ch lookups (MalwareBazaar/ThreatFox/URLhaus)
+├── threat_db.py         # SQLite threat-intel store + cross-run correlation
+├── report_export.py     # CSV / MISP event JSON / abuse report exports
+├── dashboard.py         # Flask web UI over threat_intel.db
 ├── mailer.py            # Email report with CSV
 ├── state.py             # Last run timestamp
 ├── config.py            # Config loader (.env)
@@ -176,8 +202,11 @@ C:\path\to\.venv\Scripts\python.exe  C:\path\to\analyzer.py
 | Component | Technology |
 |-----------|------------|
 | MWDB client | `mwdblib` |
-| APK parsing | `androguard` |
-| Threat lookup | VirusTotal API v3 |
+| APK parsing | `androguard`, apktool (fallback for anti-analysis samples) |
+| Threat lookup | VirusTotal API v3, abuse.ch (MalwareBazaar/ThreatFox/URLhaus) |
+| Family detection | Custom `yara-python` rules |
 | AI analysis | Ollama `qwen2.5:14b` |
+| Storage | SQLite (`threat_db.py`) |
+| Dashboard | `Flask` |
 | Terminal UI | `rich` |
 | Email | Gmail SMTP SSL |
