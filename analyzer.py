@@ -22,6 +22,10 @@ from ai_analyzer import assess_risk
 from dex_analyzer import analyze_dex
 from mobsf_client import analyze as mobsf_analyze
 from config import VT_API_KEY, MOBSF_API_KEY, MOBSF_DYNAMIC
+from ioc_extractor import extract_iocs
+import threat_db
+import yara_scanner
+import report_export
 
 console = rich_console.Console()
 
@@ -173,6 +177,45 @@ def print_result(data: dict):
             )
             table.add_row("[red]High entropy files[/red]", entropy_str)
 
+    # YARA — rodziny/kampanie rozpoznane po własnych regułach
+    yara_matches = data.get("yara_matches") or []
+    if yara_matches:
+        yara_str = "\n".join(f"[bold red]{m['family']}[/bold red] — {m['description']}" for m in yara_matches)
+        table.add_row("[bold red]YARA match[/bold red]", yara_str)
+
+    # IOC — portfele, kontakty operatorów, dead-dropy
+    iocs = data.get("iocs") or {}
+    if iocs and not iocs.get("error"):
+        wallets = iocs.get("wallets", {})
+        wallet_lines = [f"{k.upper()}: {v}" for k, values in wallets.items() for v in values]
+        if wallet_lines:
+            table.add_row("[bold red]Crypto wallets[/bold red]", "\n".join(wallet_lines))
+
+        contacts = iocs.get("operator_contacts", {})
+        contact_lines = [v for values in contacts.values() for v in values]
+        if contact_lines:
+            table.add_row("[yellow]Operator contacts[/yellow]", "\n".join(contact_lines))
+
+        if iocs.get("discord_webhooks"):
+            table.add_row("[bold red]Discord webhooks[/bold red]", "\n".join(iocs["discord_webhooks"]))
+
+        dead_drops = iocs.get("dead_drops", {})
+        drop_lines = [v for values in dead_drops.values() for v in values]
+        if drop_lines:
+            table.add_row("[red]Dead-drop resolvers[/red]", "\n".join(drop_lines))
+
+    # Korelacje — ten sam cert/IOC widziany w poprzednich runach
+    correlations = data.get("correlations") or []
+    if correlations:
+        corr_lines = []
+        for c in correlations[:5]:
+            names = ", ".join(s.get("filename", s.get("sha256", "")[:12]) for s in c.get("seen_in", [])[:3])
+            if c["type"] == "shared_certificate":
+                corr_lines.append(f"Cert {c['value'][:16]}... też w: {names}")
+            else:
+                corr_lines.append(f"{c['ioc_type']} '{c['value'][:40]}' też w: {names}")
+        table.add_row("[bold yellow]Znane z wcześniejszych runów[/bold yellow]", "\n".join(corr_lines))
+
     permissions = data.get("permissions", [])
     table.add_row("Permissions", "\n".join(permissions) if permissions else "none")
 
@@ -227,6 +270,8 @@ def main():
             data["upload_time"] = upload_time.isoformat() if upload_time else None
 
             data["dex"] = analyze_dex(apk_path, own_package=data.get("package", ""))
+            data["iocs"] = extract_iocs(apk_path)
+            data["yara_matches"] = yara_scanner.scan(apk_path)
 
             if VT_API_KEY:
                 vt = check_sha256(sha256)
@@ -241,6 +286,9 @@ def main():
 
             print(f"[dim][~] Asking AI...[/dim]")
             data["ai"] = assess_risk(data)
+
+            correlation = threat_db.store_sample(data, data.get("iocs") or {})
+            data["correlations"] = correlation.get("correlations", [])
 
             print_result(data)
             results.append(data)
@@ -258,6 +306,24 @@ def main():
         json.dump(results, f, indent=2, ensure_ascii=False)
 
     print(f"\n[bold green][+] Done. {len(results)}/{len(files)} processed. Results saved to {output_path}[/bold green]")
+
+    if results:
+        csv_path = report_export.export_csv(results)
+        misp_path = report_export.export_misp_event(results)
+        abuse_path = report_export.export_abuse_reports(results)
+        print(f"[dim][~] Exports: {csv_path}, {misp_path}, {abuse_path}[/dim]")
+
+        db_stats = threat_db.stats()
+        print(
+            f"[dim][~] Baza threat-intel: {db_stats['samples']} próbek, "
+            f"{db_stats['unique_iocs']} unikalnych IOC, {db_stats['unique_certs']} certów[/dim]"
+        )
+
+        reused = threat_db.top_reused_iocs(limit=5)
+        if reused:
+            print("[yellow][~] Najczęściej powtarzające się IOC w historii:[/yellow]")
+            for r in reused:
+                print(f"    [{r['ioc_type']}] {r['value'][:60]} — {r['sample_count']} próbek")
 
     save_last_run(run_start)
     print(f"[dim]State saved — next run will fetch APKs uploaded after {run_start.strftime('%Y-%m-%d %H:%M UTC')}[/dim]")
