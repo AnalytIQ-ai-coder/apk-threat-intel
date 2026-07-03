@@ -30,6 +30,23 @@ _JAVA_PACKAGE_PREFIXES = (
     "sun.", "libcore.", "okhttp3.", "retrofit2.",
 )
 
+# Exact false-positive "domains" that are actually Kotlin/Java identifiers
+# (e.g. kotlinx.coroutines.Dispatchers.IO gets chopped down to "Dispatchers.IO"
+# by the domain regex, since it only sees the tail with a valid-looking TLD)
+_DOMAIN_FALSE_POSITIVES = {"dispatchers.io"}
+
+# First two octets of well-known ASN.1/X.509 OID roots (RSADSI, X.500 attrs/
+# extensions, OIW, Certicom, TeleTrust, NIST algorithm IDs, ...). DEX string
+# pools embed these from crypto libs (BouncyCastle etc). A long OID like
+# "2.16.840.1.101.3.4.1.9.16" gets sliced into many overlapping 4-number
+# windows by the plain IPv4 regex, each of which looks like a valid IP.
+_OID_FIRST_OCTETS = {"0", "1", "2", "3", "4", "5", "7"}
+
+# Specific observed OID fragments whose first octet looks like a normal public
+# IP block but is actually part of a longer ASN.1 arc chain (e.g. NIST/PKCS
+# algorithm OIDs 2.16.840.1.101.3.4.x sliced into "101.3.4.x" windows).
+_OID_FRAGMENT_PREFIXES = ("61.1.1.", "101.3.4.", "223.101.")
+
 # ── Dangerous API signatures ──────────────────────────────────────────────────
 _DANGEROUS_APIS = {
     "Device fingerprinting": [
@@ -85,7 +102,25 @@ def _is_whitelisted(value: str) -> bool:
     if any(w in value for w in _DOMAIN_WHITELIST):
         return True
     lower = value.lower()
+    if lower in _DOMAIN_FALSE_POSITIVES:
+        return True
     return any(lower.startswith(p) for p in _JAVA_PACKAGE_PREFIXES)
+
+
+def _is_plausible_ip(value: str) -> bool:
+    """Filters out ASN.1 OID fragments (e.g. from X.509/crypto string tables)
+    that match the \\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3} shape but aren't IPs."""
+    host = value.split(":", 1)[0]
+    octets = host.split(".")
+    if len(octets) != 4:
+        return False
+    if any(not o.isdigit() or int(o) > 255 for o in octets):
+        return False
+    if octets[0] in _OID_FIRST_OCTETS:
+        return False
+    if any(host.startswith(p) for p in _OID_FRAGMENT_PREFIXES):
+        return False
+    return True
 
 
 def _extract_dex_strings(apk_bytes: bytes) -> list[str]:
@@ -274,7 +309,8 @@ def analyze_dex(apk_path: str, own_package: str = "") -> dict:
             if not _is_whitelisted(m):
                 urls.add(m)
         for m in _IP_RE.findall(s):
-            if not any(m.startswith(p) for p in ("127.", "0.", "192.168.", "10.", "172.")):
+            if _is_plausible_ip(m) and not any(
+                    m.startswith(p) for p in ("127.", "0.", "192.168.", "10.", "172.")):
                 ips.add(m)
         for m in _DOMAIN_RE.findall(s):
             if not _is_whitelisted(m):
@@ -285,7 +321,8 @@ def analyze_dex(apk_path: str, own_package: str = "") -> dict:
         for m in _URL_RE.findall(text):
             urls.add(f"[b64] {m}")
         for m in _IP_RE.findall(text):
-            ips.add(f"[b64] {m}")
+            if _is_plausible_ip(m):
+                ips.add(f"[b64] {m}")
 
     return {
         "urls": sorted(urls),
