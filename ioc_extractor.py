@@ -1,10 +1,3 @@
-"""Ekstrakcja IOC wykraczających poza to, co łapie dex_analyzer.
-
-Skupia się na tym, co ręcznie wyłuskiwaliśmy z raportów: portfele krypto
-(cel clipperów), kontakty operatorów (Telegram/WhatsApp), webhooki Discord
-(kanały eksfiltracji) i "dead-dropy" hostowane na GitHub/Firebase/Pages,
-z których malware pobiera świeży adres C2.
-"""
 import re
 import zipfile
 from io import BytesIO
@@ -21,16 +14,12 @@ _DISCORD_WEBHOOK_RE = re.compile(
     r'discord(?:app)?\.com/api/webhooks/\d{15,25}/[A-Za-z0-9_\-]{50,90}'
 )
 
-# "Dead-drop" resolvery — malware pobiera stamtąd aktualny adres C2, więc
-# host sam w sobie jest IOC nadającym się do zgłoszenia (np. GitHub abuse).
 _GITHUB_RAW_RE = re.compile(
     r'github(?:usercontent)?\.com/[A-Za-z0-9_\-]{1,39}/[A-Za-z0-9_\-.]{1,100}(?:/raw/|/blob/)[^\s\'"<>]{1,200}'
 )
 _FIREBASE_RTDB_RE = re.compile(r'[a-z0-9\-]{3,50}-default-rtdb\.firebaseio\.com')
 _PAGES_DEV_RE = re.compile(r'[a-z0-9\-]{3,50}\.pages\.dev')
 
-# Fałszywe znaczące symbole często obecne w placeholderach/testach —
-# odsiewamy je, żeby nie zaśmiecać wyników.
 _WALLET_BLACKLIST_SUBSTR = (
     "1111111111", "0000000000",
 )
