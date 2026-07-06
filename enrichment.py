@@ -1,10 +1,3 @@
-"""Wzbogacanie IOC o dane z publicznych feedów abuse.ch (ThreatFox, URLhaus,
-MalwareBazaar). Odpowiada na pytanie "czy to już ktoś inny widział i zgłosił"
-zamiast polegać wyłącznie na naszej lokalnej bazie korelacji.
-
-Wszystkie zapytania są best-effort — błąd sieci/API nie przerywa pipeline'u,
-tylko zwraca {"error": ...} dla danego IOC.
-"""
 import requests
 
 from config import ABUSECH_API_KEY
@@ -18,7 +11,7 @@ _URLHAUS_URL = "https://urlhaus-api.abuse.ch/v1/url/"
 
 
 def check_malwarebazaar(sha256: str) -> dict:
-    """Czy ten hash już jest w MalwareBazaar (i pod jaką sygnaturą)."""
+    
     try:
         r = requests.post(
             _MALWAREBAZAAR_URL, data={"query": "get_info", "hash": sha256},
@@ -40,7 +33,6 @@ def check_malwarebazaar(sha256: str) -> dict:
 
 
 def check_threatfox_ioc(value: str) -> dict:
-    """Czy dany IOC (IP/domena/URL) figuruje w bazie ThreatFox."""
     try:
         r = requests.post(
             _THREATFOX_URL, json={"query": "search_ioc", "search_term": value},
@@ -66,7 +58,6 @@ def check_threatfox_ioc(value: str) -> dict:
 
 
 def check_urlhaus(url: str) -> dict:
-    """Czy dany URL jest znany URLhaus jako punkt dystrybucji malware."""
     try:
         r = requests.post(_URLHAUS_URL, data={"url": url}, headers=_HEADERS, timeout=_TIMEOUT)
         j = r.json()
@@ -83,9 +74,7 @@ def check_urlhaus(url: str) -> dict:
 
 
 def enrich(data: dict, iocs: dict) -> dict:
-    """Sprawdza sha256 próbki w MalwareBazaar oraz najważniejsze wyekstrahowane
-    IOC (IP/domeny/dead-dropy w ThreatFox, URL-e w URLhaus). Zwraca tylko trafienia.
-    """
+
     result = {"malwarebazaar": None, "threatfox_hits": [], "urlhaus_hits": []}
 
     sha256 = data.get("sha256")
