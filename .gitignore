@@ -22,5 +22,5 @@ venv/
 *.apk
 *.xapk
 
-# apktool binary (23 MB) — pobierz osobno, nie trzymaj w repo
+# apktool binary (23 MB)
 tools/apktool.jar
