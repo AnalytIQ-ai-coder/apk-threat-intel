@@ -1,12 +1,24 @@
 import json
 import os
+import sys
 import traceback
 from datetime import datetime, timezone
+
+# Nazwy aplikacji w probkach bywaja pisane homoglifami (cyrylica, cherokee).
+# Jesli konsola ma kodowanie inne niz UTF-8, samo wypisanie takiej nazwy
+# przerywa caly run UnicodeEncodeError - wymuszamy UTF-8 z podmiana znakow.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from loguru import logger
 logger.disable("androguard")
 
 from rich import print
+from rich.markup import escape
+from rich.markup import render as render_markup
 from rich.table import Table
 from rich import console as rich_console
 
@@ -19,16 +31,65 @@ from mailer import send_report
 from state import load_last_run, save_last_run
 from vt_client import check_sha256, upload_file
 from ai_analyzer import assess_risk
-from dex_analyzer import analyze_dex
+from dex_analyzer import analyze_dex_isolated
 from mobsf_client import analyze as mobsf_analyze
 from config import VT_API_KEY, MOBSF_API_KEY, MOBSF_DYNAMIC, ENRICHMENT_ENABLED
-from ioc_extractor import extract_iocs
+from ioc_extractor import extract_iocs_isolated
 import threat_db
 import yara_scanner
 import report_export
 import enrichment
 
 console = rich_console.Console()
+
+# Komórki tabeli zawierają dane pochodzące wprost z analizowanej próbki (stringi
+# z DEX, nazwy plików w archiwum). Surowe bajty w terminalu to nie tylko brzydki
+# wydruk — mogą nieść sekwencje sterujące ANSI/OSC. Dlatego każda komórka jest
+# czyszczona ze znaków sterujących i przycinana do rozsądnej długości.
+_MAX_CELL_CHARS = 2000
+
+
+def _sanitize_cell(value):
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        value = str(value)
+
+    cleaned = "".join(c for c in value if c.isprintable() or c in "\n\t")
+
+    truncated_by = 0
+    if len(cleaned) > _MAX_CELL_CHARS:
+        truncated_by = len(cleaned) - _MAX_CELL_CHARS
+        cleaned = cleaned[:_MAX_CELL_CHARS]
+
+    # Dane z próbki mogą przypadkiem (lub celowo) zawierać coś, co rich weźmie
+    # za znacznik — wtedy render rzuca wyjątkiem i psuje cały run.
+    try:
+        render_markup(cleaned)
+    except Exception:
+        cleaned = escape(cleaned)
+
+    if truncated_by:
+        cleaned += f"\n[dim]… obcięto {truncated_by} znaków[/dim]"
+    return cleaned
+
+
+def _sanitize_plain(value: str, limit: int = 256) -> str:
+    """Dla wartości, które nigdy nie powinny nieść znaczników rich
+    (np. nazwa pliku z MWDB) — czyścimy i escapujemy bezwarunkowo."""
+    if not isinstance(value, str):
+        value = str(value)
+    cleaned = "".join(c for c in value if c.isprintable())
+    if len(cleaned) > limit:
+        cleaned = cleaned[:limit] + "…"
+    return escape(cleaned)
+
+
+class SafeTable(Table):
+    """Table sanityzująca każdą komórkę — patrz _sanitize_cell."""
+
+    def add_row(self, *renderables, **kwargs):
+        return super().add_row(*(_sanitize_cell(r) for r in renderables), **kwargs)
 
 
 def get_since(last_run: datetime | None) -> datetime:
@@ -53,12 +114,14 @@ def filter_new(files: list, since: datetime) -> list:
 
 
 def print_result(data: dict):
-    table = Table(title=f"[bold]{data.get('package', 'unknown')}[/bold]", show_lines=True)
+    table = SafeTable(title=f"[bold]{escape(str(data.get('package') or 'unknown'))}[/bold]", show_lines=True)
     table.add_column("Field", style="cyan", no_wrap=True)
     table.add_column("Value", style="white")
 
-    table.add_row("Package", data.get("package") or "N/A")
-    table.add_row("App name", data.get("app_name") or "N/A")
+    # Nazwa pakietu i aplikacji bywaja celowo spreparowane (homoglify, znaki
+    # zero-width), wiec escapujemy je bezwarunkowo - nic nie moze zniknac.
+    table.add_row("Package", _sanitize_plain(data.get("package") or "N/A"))
+    table.add_row("App name", _sanitize_plain(data.get("app_name") or "N/A"))
     table.add_row("Version", f"{data.get('version_name')} ({data.get('version_code')})")
     table.add_row("Min SDK", str(data.get("min_sdk") or "N/A"))
     table.add_row("Target SDK", str(data.get("target_sdk") or "N/A"))
@@ -70,8 +133,10 @@ def print_result(data: dict):
     if cert and not cert.get("error"):
         self_signed = "[red]YES[/red]" if cert.get("self_signed") else "[green]NO[/green]"
         expired = " [red](EXPIRED)[/red]" if cert.get("expired") else ""
+        schemat = cert.get("signature_scheme")
+        schemat_str = f"  [dim](schemat {schemat})[/dim]" if schemat else ""
         cert_str = (
-            f"Self-signed: {self_signed}{expired}\n"
+            f"Self-signed: {self_signed}{expired}{schemat_str}\n"
             f"Subject: {cert.get('subject', 'N/A')}\n"
             f"Valid: {cert.get('valid_from', '')[:10]} → {cert.get('valid_to', '')[:10]}\n"
             f"SHA1: {cert.get('sha1', 'N/A')}"
@@ -255,7 +320,7 @@ def main():
     mwdb = get_client()
 
     since_str = since.strftime("%Y-%m-%d %H:%M")
-    query = f'tag:*apk AND upload_time:["{since_str}" TO *]'
+    query = f'(tag:*apk OR tag:"runnable:android:apk") AND upload_time:["{since_str}" TO *]'
     print(f"[dim]Query: {query}[/dim]")
     files = list(mwdb.search_files(query))
 
@@ -270,9 +335,15 @@ def main():
 
     for obj in files:
         sha256 = getattr(obj, "sha256", "?")
-        filename = getattr(obj, "name", "") or ""
+        # Nazwa nadana przez wrzucającego próbkę — trafia do print() i do bazy,
+        # więc czyścimy ją ze znaków sterujących i znaczników rich.
+        filename = _sanitize_plain(getattr(obj, "name", "") or "")
 
-        if not filename.lower().endswith(".apk") or filename.lower().endswith(".xapk"):
+        # Próbki z tagiem runnable:android:apk często mają nazwę = sha256 bez rozszerzenia,
+        # więc nie można polegać wyłącznie na nazwie pliku
+        tags = list(getattr(obj, "tags", None) or [])
+        looks_like_apk = filename.lower().endswith(".apk") or "runnable:android:apk" in tags
+        if filename.lower().endswith(".xapk") or not looks_like_apk:
             print(f"\n[dim][~] Skipping {filename} (not .apk)[/dim]")
             continue
 
@@ -297,9 +368,13 @@ def main():
             upload_time = getattr(obj, "upload_time", None)
             data["upload_time"] = upload_time.isoformat() if upload_time else None
 
-            data["dex"] = analyze_dex(apk_path, own_package=data.get("package", ""))
-            data["iocs"] = extract_iocs(apk_path)
-            data["yara_matches"] = yara_scanner.scan(apk_path)
+            data["dex"] = analyze_dex_isolated(
+                apk_path,
+                own_package=data.get("package", ""),
+                permissions=data.get("permissions", []),
+            )
+            data["iocs"] = extract_iocs_isolated(apk_path)
+            data["yara_matches"] = yara_scanner.scan_isolated(apk_path)
 
             if VT_API_KEY:
                 vt = check_sha256(sha256)
@@ -326,7 +401,7 @@ def main():
             results.append(data)
 
         except Exception as e:
-            print(f"[red][!] Error processing {sha256[:16]}: {e}[/red]")
+            print(f"[red][!] Error processing {sha256[:16]}:[/red] {escape(str(e))}")
             traceback.print_exc()
 
         finally:

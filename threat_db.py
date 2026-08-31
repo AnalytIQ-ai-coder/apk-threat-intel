@@ -65,6 +65,21 @@ def init_db() -> None:
             pass
 
 
+# Publiczne klucze testowe AOSP (testkey/platform/shared/media) sa dolaczone do
+# zrodel Androida. Podpisuje nimi kazdy, kto przepakowuje APK — od modderow po
+# autorow malware — wiec wspolny podpis nie oznacza wspolnego operatora.
+# Korelacja po nich laczyla np. zmodowana gre Unity z trojanem bankowym.
+# Uwaga: debug keystore Android Studio ("CN=Android Debug") jest generowany per
+# maszyna, wiec jego wspoldzielenie JEST sygnalem i celowo go tu nie ma.
+_CERT_SUBJECT_NIEIDENTYFIKUJACE = ("android@android.com",)
+
+
+def cert_identyfikuje_autora(cert: dict) -> bool:
+    """Czy po tym certyfikacie warto korelowac probki."""
+    subject = (cert.get("subject") or "").lower()
+    return not any(m in subject for m in _CERT_SUBJECT_NIEIDENTYFIKUJACE)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -107,8 +122,9 @@ def store_sample(data: dict, iocs: dict) -> dict:
             ),
         )
 
-        # cert reuse — ten sam podpis na wielu próbkach = jeden operator
-        if cert.get("sha1"):
+        # cert reuse — ten sam podpis na wielu próbkach = jeden operator,
+        # ale tylko dla certow, ktore w ogole identyfikuja autora
+        if cert.get("sha1") and cert_identyfikuje_autora(cert):
             rows = conn.execute(
                 "SELECT sha256, filename FROM samples WHERE cert_sha1=? AND sha256<>?",
                 (cert["sha1"], sha256),
@@ -236,12 +252,16 @@ def get_iocs_for_sample(sha256: str) -> list[dict]:
 def search_ioc(term: str, limit: int = 50) -> list[dict]:
     """Szuka IOC po fragmencie wartości i zwraca próbki, w których wystąpił."""
     init_db()
+    # % i _ w zapytaniu uzytkownika sa wildcardami LIKE - bez neutralizacji
+    # szukanie 100_200 trafia takze w 100x200. Jako znak ucieczki bierzemy '!',
+    # zeby nie mnozyc odwrotnych ukosnikow w SQL-u.
+    escaped = term.replace('!', '!!').replace('%', '!%').replace('_', '!_')
     with _connect() as conn:
         rows = conn.execute(
             """SELECT i.ioc_type, i.value, s.sha256, s.filename, s.package
                FROM iocs i JOIN samples s ON s.sha256 = i.sha256
-               WHERE i.value LIKE ? ESCAPE '\\'
+               WHERE i.value LIKE ? ESCAPE '!'
                ORDER BY i.value LIMIT ?""",
-            (f"%{term}%", limit),
+            (f"%{escaped}%", limit),
         ).fetchall()
         return [dict(r) for r in rows]

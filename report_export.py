@@ -10,6 +10,22 @@ from datetime import datetime, timezone
 OUTPUT_DIR = "output"
 
 
+# Wartosci w CSV pochodza z probek (nazwa pakietu, URL-e z DEX). Arkusze
+# traktuja komorke zaczynajaca sie od =, +, -, @, TAB lub CR jako formule,
+# wiec otwarcie raportu w Excelu wykonywaloby kod z analizowanego malware.
+_CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", chr(9), chr(13))
+
+
+def csv_safe(value):
+    """Neutralizuje formuly w komorce CSV (CWE-1236)."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text.startswith(_CSV_INJECTION_PREFIXES):
+        return "'" + text
+    return text
+
+
 def _host_of(value: str) -> str:
     v = value.split("://", 1)[-1]
     return v.split("/", 1)[0]
@@ -50,7 +66,7 @@ def export_csv(results: list[dict], path: str = None) -> str:
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["sha256", "package", "ioc_type", "value"])
-        w.writerows(rows)
+        w.writerows([[csv_safe(c) for c in row] for row in rows])
 
     return path
 
