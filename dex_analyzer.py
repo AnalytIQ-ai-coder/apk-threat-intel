@@ -40,6 +40,32 @@ _JAVA_PACKAGE_PREFIXES = (
 # by the domain regex, since it only sees the tail with a valid-looking TLD)
 _DOMAIN_FALSE_POSITIVES = {"dispatchers.io"}
 
+# Tokeny TLD z _DOMAIN_RE. Nazwa pakietu to odwrocony DNS, wiec TLD stoi w niej
+# na POCZATKU ("com.chrome.dev", "org.openjsse.net"), a w prawdziwej domenie
+# na koncu. To jedno kryterium odsiewa ogony pakietow bez listy wyjatkow.
+_TLD_TOKENY = frozenset({
+    "com", "net", "org", "io", "ru", "cn", "tk", "top", "xyz",
+    "info", "biz", "co", "dev",
+})
+
+# Podzbior uzywany do rozpoznawania odwroconego DNS po PIERWSZEJ etykiecie.
+# Swiadomie bez "dev", "info" i "co" — to popularne nazwy subdomen
+# (dev.tapjoy.com, info.startappservice.com, co.uk), wiec pelny zestaw
+# odsiewal prawdziwe hosty razem z nazwami pakietow.
+_TLD_NA_POCZATKU_PAKIETU = frozenset({
+    "com", "net", "org", "io", "ru", "cn", "tk", "top", "xyz", "biz",
+})
+
+# Placeholdery z dokumentacji i tutoriali. Dopasowanie DOKLADNE, nie po
+# podciagu: "dynamicdns.park-your-domain.com" to prawdziwy dostawca dyn-DNS,
+# a zawiera w sobie "domain.com".
+_DOMENY_PLACEHOLDER = frozenset({
+    "example.com", "www.example.com", "example.org", "www.example.org",
+    "example.net", "www.example.net", "domain.com", "www.domain.com",
+    "mydomain.com", "yourdomain.com", "test.com", "www.test.com",
+    "simple.com", "www.xxxyyyxxx.com",
+})
+
 # First two octets of well-known ASN.1/X.509 OID roots (RSADSI, X.500 attrs/
 # extensions, OIW, Certicom, TeleTrust, NIST algorithm IDs, ...). DEX string
 # pools embed these from crypto libs (BouncyCastle etc). A long OID like
@@ -51,6 +77,12 @@ _OID_FIRST_OCTETS = {"0", "1", "2", "3", "4", "5", "7"}
 # IP block but is actually part of a longer ASN.1 arc chain (e.g. NIST/PKCS
 # algorithm OIDs 2.16.840.1.101.3.4.x sliced into "101.3.4.x" windows).
 _OID_FRAGMENT_PREFIXES = ("61.1.1.", "101.3.4.", "223.101.")
+
+# Adresy zarezerwowane dla dokumentacji: RFC 5737 (TEST-NET-1/2/3) plus
+# 123.45.67.89 — kanoniczne "przykladowe IP" z tutoriali, wpisane na sztywno
+# w UI aplikacji serwerowych (Servers Ultimate pokazywal je jako wzorzec).
+_IP_DOKUMENTACYJNE = ("192.0.2.", "198.51.100.", "203.0.113.")
+_IP_DOKUMENTACYJNE_DOKLADNE = frozenset({"123.45.67.89"})
 
 # ── Dangerous API signatures ──────────────────────────────────────────────────
 _DANGEROUS_APIS = {
@@ -131,6 +163,46 @@ def _is_whitelisted(value: str) -> bool:
     return any(lower.startswith(p) for p in _JAVA_PACKAGE_PREFIXES)
 
 
+def _domena_jest_iocem(value: str) -> bool:
+    """Czy dopasowanie _DOMAIN_RE to faktycznie host, a nie identyfikator z kodu.
+
+    Regex widzi wylacznie ogon stringa zakonczony czyms, co wyglada na TLD,
+    wiec rownie chetnie lapie nazwy klas Javy ("BitmapEncoder.com"), swizzle
+    GLSL z shaderow Fluttera ("lightDirAndSpotCutoff.xyz") i ogony pakietow
+    ("org.openjsse.net").
+
+    Uzywane WYLACZNIE dla domen. Do URL-i sie nie nadaje: "https://CaptchaKey.com"
+    to prawdziwy adres mimo wielkich liter w nazwie hosta.
+    """
+    if _is_whitelisted(value):
+        return False
+
+    if value.lower() in _DOMENY_PLACEHOLDER:
+        return False
+
+    etykiety = value.split(".")
+
+    if etykiety[0].lower() in _TLD_NA_POCZATKU_PAKIETU:
+        return False  # odwrocony DNS -> nazwa pakietu, nie host
+
+    # Dluga nazwa w camelCase to klasa Javy, nie host. Prog 18 znakow nie jest
+    # ozdobnikiem: bez niego regula zjadala HappyMod.com, LEEAPK.COM,
+    # JesusFreke.com i YTPL.net, czyli prawdziwe serwisy z pirackimi APK, ktore
+    # sa wartosciowym IOC dystrybucji. Krotkie camelCase zostaje — kilka
+    # falszywek (CenterCrop.com) jest tansze niz utrata realnych hostow.
+    if len(etykiety[0]) > 18 and re.search("[a-z0-9][A-Z]", etykiety[0]):
+        return False
+
+    # Swizzle GLSL: ".xyz" jest TLD, wiec dostep do skladowych wektora w
+    # shaderach libflutter ("a.xyz", "b.xyz") udaje domene. Zawezone do
+    # jednoznakowej etykiety, bo "g.co", "x.com" i "a.applovin.com" sa
+    # prawdziwymi domenami i nie wolno ich zgubic.
+    if len(etykiety) == 2 and len(etykiety[0]) == 1 and etykiety[1].lower() == "xyz":
+        return False
+
+    return True
+
+
 def _is_plausible_ip(value: str) -> bool:
     """Czy to adres, ktory ma sens jako IOC.
 
@@ -157,6 +229,8 @@ def _is_plausible_ip(value: str) -> bool:
     if oktety[0] in _OID_FIRST_OCTETS:
         return False
     if host.startswith(_OID_FRAGMENT_PREFIXES):
+        return False
+    if host.startswith(_IP_DOKUMENTACYJNE) or host in _IP_DOKUMENTACYJNE_DOKLADNE:
         return False
 
     a, b = int(oktety[0]), int(oktety[1])
@@ -499,26 +573,57 @@ _PERMISJE_ATAKU_NA_APLIKACJE = (
 )
 
 
+_SLOWA_KLUCZE_CELOW = (
+    "bank", "sber", "tinkoff", "alfa", "vtb", "gazprom", "finam",
+    "raif", "otp", "unicredit", "modul", "oneme", "wildberries",
+    "pay", "wallet", "fintech", "crypto", "btc", "cash",
+)
+
+# Pakiety bibliotek, ktore zawieraja slowa-klucze, ale nie sa celem ataku:
+# javax.crypto i org.bouncycastle.crypto trafialy na liste "celow" w kazdej
+# aplikacji uzywajacej szyfrowania, czyli praktycznie w kazdej.
+_PAKIETY_BIBLIOTEK = _JAVA_PACKAGE_PREFIXES + (
+    "javax.", "org.bouncycastle.", "org.spongycastle.", "com.google.",
+    "io.reactivex.", "com.squareup.", "org.codehaus.", "org.jetbrains.",
+    "com.sun.", "gnu.", "kawa.", "com.facebook.", "org.slf4j.",
+)
+
+# Segmenty, ktore zaczynaja sie od slowa-klucza, ale sa zwyklymi slowami z kodu.
+# "module" zaczyna sie od "modul" (Modulbank), "payload" od "pay".
+_SEGMENTY_NIE_CEL = frozenset({
+    "module", "modules", "modular", "payload", "payloads",
+})
+
+
 def _find_targeted_packages(strings: list[str], own_package: str = "",
                             permissions=()) -> list[str]:
     if not any(p in set(permissions or ()) for p in _PERMISJE_ATAKU_NA_APLIKACJE):
         return []  # brak zdolnosci ataku na inna aplikacje -> to nie lista celow
 
     candidates = set()
-    banking_keywords = {
-        "bank", "sber", "tinkoff", "alfa", "vtb", "gazprom", "finam",
-        "raif", "otp", "unicredit", "modul", "oneme", "wildberries",
-        "pay", "wallet", "fintech", "crypto", "btc", "cash",
-    }
     for s in strings:
         for m in _PKG_RE.findall(s):
-            if m == own_package:
-                continue
-            if len(m) < 10 or m.startswith("android.") or m.startswith("java."):
+            if m == own_package or len(m) < 10:
                 continue
             lower = m.lower()
-            if any(kw in lower for kw in banking_keywords):
-                candidates.add(m)
+            if lower.startswith(_PAKIETY_BIBLIOTEK):
+                continue
+
+            segmenty = re.split("[._]", lower)
+            # "www.paypal.com" to domena, nie pakiet — _PKG_RE nie widzi roznicy.
+            # W odwroconym DNS TLD stoi na poczatku, nigdy na koncu.
+            if segmenty[-1] in _TLD_TOKENY:
+                continue
+
+            # Dopasowanie do POCZATKU segmentu zamiast do dowolnego podciagu
+            # calej nazwy: "sberbankmobile" ma zaczynac sie od "sber", ale
+            # "kawa.standard.module_name" nie ma uchodzic za Modulbank.
+            for seg in segmenty:
+                if seg in _SEGMENTY_NIE_CEL:
+                    continue
+                if any(seg.startswith(kw) for kw in _SLOWA_KLUCZE_CELOW):
+                    candidates.add(m)
+                    break
     return sorted(candidates)
 
 
@@ -544,7 +649,7 @@ def analyze_dex(apk_path: str, own_package: str = "", permissions=()) -> dict:
             if _is_plausible_ip(m):
                 ips.add(m)
         for m in _DOMAIN_RE.findall(s):
-            if not _is_whitelisted(m):
+            if _domena_jest_iocem(m):
                 domains.add(m)
 
     decoded_b64 = _decode_base64_strings(strings)

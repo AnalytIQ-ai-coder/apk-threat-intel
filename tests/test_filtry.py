@@ -1,0 +1,161 @@
+"""Testy regresyjne filtrow odsiewajacych falszywe IOC.
+
+Uruchomienie: python tests/test_filtry.py   (nie wymaga pytest)
+
+Kazdy przypadek pochodzi z faktycznego przebiegu analyzer.py, nie z wyobrazni.
+W komentarzach jest zrodlo, zeby przy nastepnej zmianie regexa bylo widac,
+czego dokladnie pilnuje dany assert.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from dex_analyzer import (  # noqa: E402
+    _domena_jest_iocem,
+    _find_targeted_packages,
+    _is_plausible_ip,
+)
+
+OVERLAY = ["android.permission.SYSTEM_ALERT_WINDOW"]
+SMS = ["android.permission.RECEIVE_SMS"]
+
+
+# ── Domeny: identyfikatory z kodu nie sa hostami ──────────────────────────────
+
+def test_swizzle_glsl_odsiany():
+    # Shadery w libflutter.so: dostep do skladowych wektora, a ".xyz" jest TLD.
+    # Probka org.traccar.client wygenerowala a.xyz ... f.xyz plus K.xyz.
+    for d in ("a.xyz", "b.xyz", "f.xyz", "K.xyz"):
+        assert not _domena_jest_iocem(d), d
+
+
+def test_jednoznakowe_domeny_zachowane():
+    # Kontrprzyklad do powyzszego. Te sa prawdziwe i wystepuja w bazie
+    # (g.co 16x, x.com 6x, a.applovin.com 9x) — regula na swizzle nie moze
+    # ich zabrac, dlatego jest zawezona do TLD ".xyz".
+    for d in ("g.co", "x.com", "a.applovin.com", "z.moatads.com"):
+        assert _domena_jest_iocem(d), d
+
+
+def test_dlugie_nazwy_klas_odsiane():
+    # Nazwy klas Glide i shaderow Fluttera z string poola, zakonczone czyms
+    # co wyglada na TLD. Prog dlugosci celowo wysoki — patrz test ponizej.
+    for d in ("GifBitmapWrapperDrawableTranscoder.com",
+              "FileDescriptorBitmapDecoder.com", "StreamBitmapDecoder.com",
+              "AdvertisingIdClient.Info", "lightDirAndSpotCutoff.xyz",
+              "genretrucklooksValueFrame.net"):
+        assert not _domena_jest_iocem(d), d
+
+
+def test_krotkie_camelcase_zachowane():
+    # Kontrprzyklad, ktory obalil pierwsza wersje reguly: te hosty istnieja
+    # naprawde i sa wartosciowym IOC dystrybucji pirackich APK. Odrzucanie
+    # kazdego camelCase kosztowalo je wszystkie, wiec regula dziala dopiero
+    # powyzej 18 znakow. Cena: CenterCrop.com zostaje falszywka.
+    for d in ("HappyMod.com", "LEEAPK.COM", "JesusFreke.com", "YTPL.net",
+              "9Mod.Com", "HE.net", "CaptchaKey.com"):
+        assert _domena_jest_iocem(d), d
+
+
+def test_ogony_pakietow_odsiane():
+    # Odwrocony DNS: TLD na poczatku zamiast na koncu.
+    for d in ("org.openjsse.net", "com.chrome.dev", "io.ktor.utils.io",
+              "ru.vk.store.lib.network.info", "xyz.quaver.io"):
+        assert not _domena_jest_iocem(d), d
+
+
+def test_subdomeny_o_nazwie_tld_zachowane():
+    # Drugi kontrprzyklad: "dev", "info" i "co" to popularne nazwy subdomen,
+    # wiec nie moga wpasc pod regule odwroconego DNS mimo ze sa TLD.
+    for d in ("dev.tapjoy.com", "dev.leanplum.com", "info.startappservice.com",
+              "info.3g.qq.com"):
+        assert _domena_jest_iocem(d), d
+
+
+def test_placeholdery_odsiane():
+    for d in ("www.example.com", "example.org", "domain.com", "test.com"):
+        assert not _domena_jest_iocem(d), d
+
+
+def test_placeholder_nie_lapie_po_podciagu():
+    # "park-your-domain.com" zawiera "domain.com", ale to prawdziwy dostawca
+    # dyn-DNS z probki com.icecoldapps.serversultimate. Dopasowanie musi byc
+    # dokladne, inaczej gubimy realny host.
+    assert _domena_jest_iocem("dynamicdns.park-your-domain.com")
+
+
+def test_prawdziwe_domeny_przechodza():
+    for d in ("panel.mp3pn.info", "evil-c2.top", "mp3pn.info",
+              "captrustdb-default-rtdb.firebaseio.com", "deephost.in"):
+        assert _domena_jest_iocem(d), d
+
+
+# ── Cele ataku: slowa-klucze dopasowane do segmentow, nie do podciagow ────────
+
+def test_kawa_module_nie_jest_celem():
+    # com.captchakey.superhigh (Kodular/App Inventor): slowo-klucz "modul"
+    # od Modulbanku trafialo w angielskie "module" z runtime'u Kawa.
+    wynik = _find_targeted_packages(
+        ["kawa.standard.module_compile_options", "kawa.standard.module_name",
+         "kawa.standard.module_static"], permissions=OVERLAY)
+    assert wynik == [], wynik
+
+
+def test_domena_nie_jest_pakietem():
+    # _PKG_RE lapie "www.paypal.com" tak samo jak nazwe pakietu.
+    wynik = _find_targeted_packages(["www.paypal.com"], permissions=OVERLAY)
+    assert wynik == [], wynik
+
+
+def test_biblioteki_kryptograficzne_nie_sa_celem():
+    # Slowo-klucz "crypto" trafialo w javax.crypto i BouncyCastle, czyli
+    # w kazda aplikacje uzywajaca szyfrowania.
+    wynik = _find_targeted_packages(
+        ["javax.crypto.spec", "org.bouncycastle.crypto.engines",
+         "org.bouncycastle.crypto.params"], permissions=OVERLAY)
+    assert wynik == [], wynik
+
+
+def test_prawdziwe_cele_nadal_wykrywane():
+    # Kontrprzyklad: poprawka nie moze zabic wykrywania faktycznych celow.
+    wynik = _find_targeted_packages(
+        ["com.idamob.tinkoff.android", "com.paypal.android.p2pmobile",
+         "com.wallet.crypto.trustapp", "com.bankofamerica.mobile"],
+        permissions=SMS)
+    assert wynik == ["com.bankofamerica.mobile", "com.idamob.tinkoff.android",
+                     "com.paypal.android.p2pmobile",
+                     "com.wallet.crypto.trustapp"], wynik
+
+
+def test_brak_uprawnien_to_brak_celow():
+    # Launcher Niagara dostawal liste 31 "celow" bez zdolnosci ich atakowania.
+    wynik = _find_targeted_packages(["com.bankofamerica.mobile"], permissions=[])
+    assert wynik == [], wynik
+
+
+# ── IP ────────────────────────────────────────────────────────────────────────
+
+def test_ip_dokumentacyjne_odsiane():
+    # 123.45.67.89 z com.icecoldapps.serversultimate to wzorzec w UI apki.
+    for ip in ("123.45.67.89", "192.0.2.15", "198.51.100.7", "203.0.113.200"):
+        assert not _is_plausible_ip(ip), ip
+
+
+def test_prawdziwe_ip_przechodzi():
+    for ip in ("8.8.8.8", "45.132.11.7", "185.220.101.44"):
+        assert _is_plausible_ip(ip), ip
+
+
+if __name__ == "__main__":
+    testy = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")]
+    bledy = 0
+    for nazwa, fn in testy:
+        try:
+            fn()
+            print(f"  OK    {nazwa}")
+        except AssertionError as e:
+            bledy += 1
+            print(f"  BLAD  {nazwa}: {e}")
+    print(f"\n{len(testy) - bledy}/{len(testy)} przeszlo")
+    sys.exit(1 if bledy else 0)
