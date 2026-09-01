@@ -1,12 +1,20 @@
 import os
+import re
 
 
 def save_apk(obj, output_dir="output"):
     os.makedirs(output_dir, exist_ok=True)
 
     sha256 = getattr(obj, "sha256", None) or "unknown"
-    filename = getattr(obj, "name", None) or f"{sha256}.apk"
-    file_path = os.path.abspath(os.path.join(output_dir, filename))
+
+    # obj.name to oryginalna nazwa nadana przez osobę wrzucającą próbkę do MWDB,
+    # czyli wartość kontrolowana przez potencjalnego atakującego. Użyta wprost
+    # w os.path.join pozwala wyjść poza output/ (np. "..\\..\\Windows\\..."),
+    # dlatego zapisujemy zawsze pod zwalidowanym hashem.
+    if not re.fullmatch(r'[0-9a-fA-F]{64}', str(sha256)):
+        raise ValueError(f"Nieprawidłowy SHA256 próbki: {sha256!r}")
+
+    file_path = os.path.abspath(os.path.join(output_dir, f"{sha256.lower()}.apk"))
 
     if os.path.exists(file_path):
         return file_path

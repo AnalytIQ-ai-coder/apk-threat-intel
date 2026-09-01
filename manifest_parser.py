@@ -3,15 +3,24 @@ import os
 import shutil
 import subprocess
 import tempfile
-import xml.etree.ElementTree as ET
+# defusedxml zamiast xml.etree: to drugie jest wg dokumentacji Pythona
+# podatne na billion laughs i quadratic blowup, a parsujemy tu manifest
+# odkodowany ze zlosliwej probki.
+import defusedxml.ElementTree as ET
 import zipfile
-import multiprocessing as mp
+
+from loguru import logger
+# Wyciszamy tu, a nie tylko w analyzer.py: ten modul biegnie takze w
+# procesach potomnych run_isolated, ktore nie importuja analyzer.py.
+logger.disable("androguard")
 
 from androguard.core.apk import APK
 from cert_analyzer import analyze_cert
+from isolation import run_isolated, IsolationTimeout, IsolationError
 
 _APKTOOL_JAR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "apktool.jar")
 _ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
+_MAX_INNER_APK_BYTES = 512 * 1024 * 1024
 
 
 def _read_apk_bytes_from_xapk(xapk_path: str) -> bytes:
@@ -36,8 +45,15 @@ def _read_apk_bytes_from_xapk(xapk_path: str) -> bytes:
             if preferred:
                 apk_candidates = preferred
 
-        with z.open(apk_candidates[0]) as f:
-            return f.read()
+        # XAPK to niezaufany ZIP — wpis moze rozpakowac sie do gigabajtow.
+        info = z.getinfo(apk_candidates[0])
+        if info.file_size > _MAX_INNER_APK_BYTES:
+            raise ValueError(f"APK w XAPK ma {info.file_size} B — powyzej limitu")
+        with z.open(info) as f:
+            data = f.read(_MAX_INNER_APK_BYTES + 1)
+        if len(data) > _MAX_INNER_APK_BYTES:
+            raise ValueError("APK w XAPK przekroczyl limit przy odczycie")
+        return data
 
 
 def _safe(fn, default=None):
@@ -134,6 +150,17 @@ def _parse_raw(apk_path: str) -> APK:
         return APK(f.read(), raw=True)
 
 
+def parse_apk_bytes(apk_bytes: bytes) -> dict:
+    """Parsuje APK prosto z pamieci, bez zapisu na dysk.
+
+    Zapisanie probki na dysk pod Windowsem sprawia, ze Defender ja flaguje
+    i blokuje ponowne otwarcie — Python zglasza to jako mylace
+    "[Errno 22] Invalid argument" przy open(). Analiza w pamieci omija
+    skanowanie plikowe w calosci i jest przy okazji szybsza.
+    """
+    return _parse_apk_obj(APK(apk_bytes, raw=True))
+
+
 def parse_apk_apktool(apk_path: str, timeout: int = 120) -> dict:
     """Fallback: dekoduj manifest apktoolem gdy androguard się wiesza.
 
@@ -212,38 +239,20 @@ def _parse_manifest_xml(manifest_path: str) -> dict:
     }
 
 
-def _parse_worker(apk_path: str, q) -> None:
-    try:
-        q.put(("ok", parse_apk(apk_path)))
-    except Exception as e:
-        q.put(("err", str(e)))
-
-
 def parse_apk_timeout(apk_path: str, timeout: int = 90) -> dict:
     """Parsuj APK w osobnym procesie z twardym limitem czasu.
 
-    Chroni przed spreparowanym AndroidManifest.xml (AXML bombing), który
-    zawiesza parser androguarda w nieskończoność jako technika anty-analizy.
-    Po przekroczeniu limitu proces jest ubijany i zgłaszany jest wyjątek.
+    Chroni przed spreparowanym AndroidManifest.xml (AXML bombing), ktory
+    zawiesza parser androguarda w nieskonczonosc jako technika anty-analizy.
+    Po przekroczeniu limitu proces jest ubijany i probujemy fallbacku apktool.
     """
-    ctx = mp.get_context("spawn")
-    q = ctx.Queue()
-    p = ctx.Process(target=_parse_worker, args=(apk_path, q), daemon=True)
-    p.start()
-    p.join(timeout)
-
-    if p.is_alive():
-        p.terminate()
-        p.join()
-        print(f"  [~] androguard timeout po {timeout}s — próbuję fallback apktool...")
+    try:
+        return run_isolated(parse_apk, (apk_path,), timeout=timeout)
+    except IsolationTimeout:
+        print(f"  [~] androguard timeout po {timeout}s - probuje fallback apktool...")
         return parse_apk_apktool(apk_path)
-    if q.empty():
-        raise ValueError("Proces parsujący zakończył się bez wyniku")
-
-    status, payload = q.get()
-    if status == "err":
-        raise ValueError(payload)
-    return payload
+    except IsolationError as e:
+        raise ValueError(str(e).splitlines()[-1])
 
 
 def parse_apk(apk_path: str) -> dict:

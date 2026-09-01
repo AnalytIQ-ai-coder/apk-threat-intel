@@ -4,6 +4,7 @@ import smtplib
 from email.message import EmailMessage
 
 from config import EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT
+from report_export import csv_safe
 
 
 def _build_body(results: list[dict]) -> str:
@@ -79,7 +80,7 @@ def _build_csv(results: list[dict]) -> bytes:
         mobsf_static = mobsf.get("static") or {}
         mobsf_dynamic = mobsf.get("dynamic") or {}
 
-        writer.writerow([
+        writer.writerow([csv_safe(v) for v in [
             r.get("sha256"),
             r.get("package"),
             r.get("app_name"),
@@ -117,7 +118,7 @@ def _build_csv(results: list[dict]) -> bytes:
             "; ".join(mobsf_static.get("manifest_analysis", [])[:5]),
             "; ".join(f"{c['method']} {c['url']}" for c in mobsf_dynamic.get("network_calls", [])[:5]),
             "; ".join(str(s) for s in mobsf_dynamic.get("sms_sent", [])),
-        ])
+        ]])
     return buf.getvalue().encode("utf-8")
 
 

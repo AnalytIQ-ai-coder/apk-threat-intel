@@ -1,27 +1,57 @@
 import datetime
 import hashlib
 
+from loguru import logger
+# Ten modul bywa importowany samodzielnie (np. przez skrypty narzedziowe),
+# ktore nie ciagna dex_analyzer ani manifest_parser — wyciszamy tu tez.
+logger.disable("androguard")
+
 from androguard.core.apk import APK
+
+
+def _pobierz_cert_der(apk: APK):
+    """Zwraca (DER certyfikatu, uzyty schemat podpisu) albo (None, None).
+
+    Kaskada v1 -> v2 -> v3. get_signature_names()/get_certificate_der() czytaja
+    wylacznie podpis JAR (META-INF/*.RSA), czyli schemat v1. APK budowane pod
+    SDK 30+ czesto pomijaja v1 i maja tylko APK Signature Scheme v2/v3 — dla
+    nich stary kod zwracal "No signature found (unsigned APK)", co bylo mylace
+    i wylaczalo klastrowanie kampanii po certyfikacie.
+
+    Kolejnosc jest celowa: v1 najpierw, zeby odciski juz zapisane w bazie
+    pozostaly stabilne. Przy rotacji klucza (v3) v2 trzyma starszy certyfikat,
+    ktory lepiej nadaje sie do korelacji historycznej.
+    """
+    try:
+        nazwy = apk.get_signature_names()
+        if nazwy:
+            der = apk.get_certificate_der(nazwy[0])
+            if der:
+                return der, "v1"
+    except Exception:
+        pass
+
+    for schemat, metoda in (("v2", "get_certificates_der_v2"),
+                            ("v3", "get_certificates_der_v3")):
+        try:
+            dery = getattr(apk, metoda)()
+        except Exception:
+            continue
+        if dery:
+            return dery[0], schemat
+
+    return None, None
 
 
 def analyze_cert(apk: APK) -> dict:
     try:
-        sig_names = apk.get_signature_names()
-        if not sig_names:
-            return {"error": "No signature found (unsigned APK)"}
-
-        cert_der = apk.get_certificate_der(sig_names[0])
+        cert_der, schemat = _pobierz_cert_der(apk)
         if not cert_der:
-            return {"error": "Could not read certificate"}
+            return {"error": "Brak podpisu (APK niepodpisany lub schemat nieobslugiwany)"}
 
-        # Parse with asn1crypto
-        from asn1crypto import pem, x509
+        from asn1crypto import x509
         cert = x509.Certificate.load(cert_der)
         tbs = cert["tbs_certificate"]
-
-        subject = dict(tbs["subject"].human_friendly.split(", ")[i].split("=", 1)
-                       for i in range(len(tbs["subject"].human_friendly.split(", ")))
-                       if "=" in tbs["subject"].human_friendly.split(", ")[i])
 
         issuer_str = tbs["issuer"].human_friendly
         subject_str = tbs["subject"].human_friendly
@@ -46,6 +76,7 @@ def analyze_cert(apk: APK) -> dict:
             "expired": expired,
             "sha1": sha1,
             "sha256": sha256,
+            "signature_scheme": schemat,
         }
 
     except Exception as e:
