@@ -35,8 +35,6 @@ _GITHUB_RAW_RE = re.compile(
 _FIREBASE_RTDB_RE = re.compile(r'[a-z0-9\-]{3,50}-default-rtdb\.firebaseio\.com')
 _PAGES_DEV_RE = re.compile(r'[a-z0-9\-]{3,50}\.pages\.dev')
 
-# Fałszywe znaczące symbole często obecne w placeholderach/testach —
-# odsiewamy je, żeby nie zaśmiecać wyników.
 _WALLET_BLACKLIST_SUBSTR = (
     "1111111111", "0000000000",
 )

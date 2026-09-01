@@ -1,7 +1,5 @@
 /*
-    Reguły napisane na podstawie próbek faktycznie widzianych w tym pipeline'ie
-    (nie ogólne sygnatury branżowe). Każda odpowiada rodzinie/kampanii, którą
-    zidentyfikowaliśmy ręcznie w raportach threat-intel.
+    Custom rules based on what we see in previous pipelines
 */
 
 rule ZloySync_RU_Banker

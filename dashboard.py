@@ -1,8 +1,6 @@
-"""Lekki dashboard webowy do przeglądania output/threat_intel.db bez pisania
-SQL-a ręcznie: lista próbek, statystyki, najczęściej powtarzające się IOC,
-wyszukiwarka IOC i widok szczegółów pojedynczej próbki z korelacjami.
+"""Local web dashboard
 
-Uruchomienie:  python dashboard.py   (domyślnie http://localhost:5001)
+Running:  python dashboard.py  (defualt http://localhost:5001)
 """
 from urllib.parse import quote
 
