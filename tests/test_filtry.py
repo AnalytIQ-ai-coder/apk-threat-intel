@@ -98,8 +98,25 @@ def test_tld_kolidujace_z_kodem_odsiane():
     for d in ("Rect.top", "LocalRect.top", "SystemUiOverlay.top", "window.top",
               "a.style.top", "a.top", "a.j.top", "console.info", "Log.INFO",
               "Log.private.info", "s.INFO", "Sharp.Info", "EVENTS.INFO",
-              "feature.screen.info", "x.print.processor.info"):
+              "feature.screen.info",
+              # ".xyz" — swizzle i nazwy wektorow z shaderow
+              "fragColor.xyz", "nCol.xyz", "vHsl.xyz", "extrudeRes.xyz",
+              "color.xyz", "position.xyz", "texel.xyz", "materialParams.e.xyz",
+              # ".io" — dispatchery i ogony pakietow Javy
+              "Dispatchers.IO", "ExecutorProvider.IO", "Schedulers.io",
+              "Socket.IO", "Ljava.io", "Start.io",
+              # ".tk"
+              "T.Tk"):
         assert not _domena_jest_iocem(d), d
+
+
+def test_krotka_subdomena_cdn_zachowana():
+    # Kontrprzyklad, ktory przesadzil o ksztalcie reguly. Kusilo, zeby odrzucac
+    # jednoznakowa pierwsza etykiete ("x.print.processor.info"), ale pomiar na
+    # bazie pokazal koszt: to prawdziwe hosty sieci reklamowej Ogury.
+    # Trzeci raz w tym module ta sama pomylka — po g.co i a.applovin.com.
+    for d in ("s.presage.io", "s.cloud.ogury.io", "s.qa.cloud.ogury.io"):
+        assert _domena_jest_iocem(d), d
 
 
 def test_prawdziwe_domeny_na_top_i_info_zachowane():
@@ -108,7 +125,11 @@ def test_prawdziwe_domeny_na_top_i_info_zachowane():
     # wiec regula nie moze wycinac tych koncowek hurtem.
     for d in ("poker-rooms.top", "cln9vhvfo2.top", "api.zold.top",
               "play.xpass.top", "api.waqi.info", "pirate-bay.info",
-              "receive-sms-online.info", "mp3pn.info"):
+              "receive-sms-online.info", "mp3pn.info",
+              # .xyz/.io/.tk sa tanie i wlasnie dlatego popularne wsrod C2
+              "bsqzx.xyz", "pdlinkfortysix.xyz", "trkpp.xyz", "vidsrc.xyz",
+              "api16-access-sg.pangle.io", "rx2.io", "ktor.io", "msg.io",
+              "darkplaykids.tk", "www.darkplayapp.tk"):
         assert _domena_jest_iocem(d), d
 
 
@@ -187,6 +208,32 @@ def test_ip_dokumentacyjne_odsiane():
     # 123.45.67.89 z com.icecoldapps.serversultimate to wzorzec w UI apki.
     for ip in ("123.45.67.89", "192.0.2.15", "198.51.100.7", "203.0.113.200"):
         assert not _is_plausible_ip(ip), ip
+
+
+def test_numery_wersji_nie_sa_adresami():
+    # Jedna probka (ibisPaint X) dala dziesiec takich naraz. W calej bazie
+    # 26 ze 127 adresow ma wszystkie oktety <= 30 i kazdy jest numerem wersji.
+    for ip in ("6.4.2.1", "8.3.6.1", "9.7.0.3", "13.6.2.0", "22.7.0.1",
+               "23.3.0.1", "9.14.12.0", "6.17.0.1", "30.0.0.20"):
+        assert not _is_plausible_ip(ip), ip
+
+
+def test_resolwery_o_jednakowych_oktetach_zachowane():
+    # Kontrprzyklad: 8.8.8.8 ma wszystkie oktety <= 30, ale to adres, nie wersja.
+    # Numer wersji nigdy nie ma czterech jednakowych czlonow.
+    #
+    # Bez 1.1.1.1 celowo: ten adres odrzuca WCZESNIEJSZA regula, bo "1" jest
+    # poczatkiem lukow OID w X.509 (2.5.4.3 = commonName itd.). To zachowanie
+    # sprzed tej zmiany i osobny kompromis — resolwer Cloudflare jest cena za
+    # odsianie fragmentow OID-ow, ktorych bylo w bazie duzo wiecej.
+    for ip in ("8.8.8.8", "9.9.9.9"):
+        assert _is_plausible_ip(ip), ip
+
+
+def test_adres_z_portem_nie_jest_wersja():
+    # Port oznacza kontekst sieciowy — takiego zapisu nie generuje numer wersji.
+    assert _is_plausible_ip("30.10.216.161:12580")
+    assert _is_plausible_ip("8.210.95.146:8089")
 
 
 def test_prawdziwe_ip_przechodzi():
