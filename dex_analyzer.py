@@ -59,6 +59,26 @@ _TLD_NA_POCZATKU_PAKIETU = frozenset({
 # Placeholdery z dokumentacji i tutoriali. Dopasowanie DOKLADNE, nie po
 # podciagu: "dynamicdns.park-your-domain.com" to prawdziwy dostawca dyn-DNS,
 # a zawiera w sobie "domain.com".
+# Te TLD koliduja z identyfikatorami z kodu czesciej niz jakiekolwiek inne:
+# geometria i CSS (rect.top, window.top, a.style.top) oraz logowanie
+# (console.info, Log.INFO). W bazie na 36 domen ".top" prawdziwe sa cztery,
+# a na 63 domeny ".info" okolo pieciu. NIE mozna ich wyciac hurtem —
+# poker-rooms.top i cln9vhvfo2.top to realne C2 — wiec zamiast tego podnosimy
+# dla nich prog wiarygodnosci w _domena_jest_iocem.
+_TLD_KOLIDUJACE_Z_KODEM = frozenset({"top", "info", "xyz", "io", "tk"})
+
+# Nazwy wlasciwosci i obiektow, po ktorych czesto nastepuje ".top" albo ".info"
+# w kodzie. Sprawdzane w KAZDEJ etykiecie, bo wzorzec bywa zagniezdzony
+# ("a.style.top", "Log.private.info", "feature.screen.info").
+_WLASCIWOSCI_UDAJACE_HOST = frozenset({
+    # wlasciwosci obiektow i logowanie: rect.top, window.top, console.info
+    "style", "window", "console", "log", "screen", "feature",
+    "document", "parent", "rect", "layout", "bounds",
+    # nazwy wektorow w shaderach — po nich nastepuje swizzle ".xyz"
+    "color", "position", "normal", "tangent", "texel", "vertex",
+    "hsl", "hsv", "fragcolor", "light", "dir", "pos", "vec",
+})
+
 _DOMENY_PLACEHOLDER = frozenset({
     "example.com", "www.example.com", "example.org", "www.example.org",
     "example.net", "www.example.net", "domain.com", "www.domain.com",
@@ -83,6 +103,18 @@ _OID_FRAGMENT_PREFIXES = ("61.1.1.", "101.3.4.", "223.101.")
 # w UI aplikacji serwerowych (Servers Ultimate pokazywal je jako wzorzec).
 _IP_DOKUMENTACYJNE = ("192.0.2.", "198.51.100.", "203.0.113.")
 _IP_DOKUMENTACYJNE_DOKLADNE = frozenset({"123.45.67.89"})
+
+# Numery wersji SDK zapisane czterema czlonami ("6.4.2.1", "9.14.12.0") sa
+# nieodroznialne od adresu IP dla samego regexa. Jedna probka ibisPaint X dala
+# ich dziesiec naraz. Roznica jest statystyczna: adres, ktorego WSZYSTKIE cztery
+# oktety sa male, to 0,02% przestrzeni adresowej, a wsrod 127 adresow w bazie
+# 26 spelnia ten warunek i kazdy z nich jest numerem wersji. Wiele konczy sie
+# na ".0", wiec nawet jako adresy bylyby adresami sieci, nie hostow.
+#
+# Prog 30 zamiast np. 255 wybrany po pomiarze na bazie. Warunek dodatkowy:
+# adres z numerem portu zostaje zawsze — port oznacza kontekst sieciowy,
+# a nie wersje biblioteki.
+_MAX_OKTET_WERSJI = 30
 
 # ── Dangerous API signatures ──────────────────────────────────────────────────
 _DANGEROUS_APIS = {
@@ -200,6 +232,28 @@ def _domena_jest_iocem(value: str) -> bool:
     if len(etykiety) == 2 and len(etykiety[0]) == 1 and etykiety[1].lower() == "xyz":
         return False
 
+    if etykiety[-1].lower() in _TLD_KOLIDUJACE_Z_KODEM:
+        # DNS zapisuje sie malymi literami; ".Top" albo ".INFO" to stala w kodzie.
+        if not etykiety[-1].islower():
+            return False
+        # Wielka litera w etykiecie przed TLD: "Rect.top", "SystemUiOverlay.top".
+        if any(z.isupper() for z in etykiety[-2]):
+            return False
+        # Krotkie etykiety czysto literowe to nazwy zmiennych po minifikacji
+        # ("a.top", "s.INFO", "a.j.top"). Warunek "tylko litery" jest istotny:
+        # bez niego regula zabierala www.6b.top i tws.6b.top, czyli krotka,
+        # ale prawdziwa domene.
+        if len(etykiety[-2]) <= 2 and etykiety[-2].isalpha():
+            return False
+        # SWIADOMIE nie odrzucamy jednoznakowej PIERWSZEJ etykiety. Kusilo,
+        # zeby tak zrobic dla "x.print.processor.info", ale pomiar na bazie
+        # pokazal koszt: s.presage.io, s.cloud.ogury.io i s.qa.cloud.ogury.io
+        # to prawdziwe hosty sieci reklamowej Ogury. Krotkie subdomeny
+        # (s., a., d., g.co) sa u CDN-ow powszechne — to juz trzeci raz, gdy
+        # ta sama regula probowala zabrac realne dane.
+        if any(e.lower() in _WLASCIWOSCI_UDAJACE_HOST for e in etykiety[:-1]):
+            return False
+
     return True
 
 
@@ -232,6 +286,11 @@ def _is_plausible_ip(value: str) -> bool:
         return False
     if host.startswith(_IP_DOKUMENTACYJNE) or host in _IP_DOKUMENTACYJNE_DOKLADNE:
         return False
+    ma_port = ":" in value.replace("[b64] ", "")
+    wszystkie_rowne = len(set(oktety)) == 1   # 8.8.8.8, 1.1.1.1, 9.9.9.9
+    if (not ma_port and not wszystkie_rowne
+            and all(int(o) <= _MAX_OKTET_WERSJI for o in oktety)):
+        return False    # numer wersji, nie adres
 
     a, b = int(oktety[0]), int(oktety[1])
     if oktety[2:] == ["0", "0"]:

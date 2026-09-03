@@ -16,6 +16,7 @@ from dex_analyzer import (  # noqa: E402
     _find_targeted_packages,
     _is_plausible_ip,
 )
+from ioc_extractor import _WORKERS_DEV_RE  # noqa: E402
 
 OVERLAY = ["android.permission.SYSTEM_ALERT_WINDOW"]
 SMS = ["android.permission.RECEIVE_SMS"]
@@ -91,6 +92,73 @@ def test_prawdziwe_domeny_przechodza():
         assert _domena_jest_iocem(d), d
 
 
+def test_tld_kolidujace_z_kodem_odsiane():
+    # ".top" i ".info" koliduja z geometria/CSS i z logowaniem czesciej niz
+    # jakikolwiek inny TLD. W bazie na 36 domen ".top" prawdziwe byly cztery.
+    for d in ("Rect.top", "LocalRect.top", "SystemUiOverlay.top", "window.top",
+              "a.style.top", "a.top", "a.j.top", "console.info", "Log.INFO",
+              "Log.private.info", "s.INFO", "Sharp.Info", "EVENTS.INFO",
+              "feature.screen.info",
+              # ".xyz" — swizzle i nazwy wektorow z shaderow
+              "fragColor.xyz", "nCol.xyz", "vHsl.xyz", "extrudeRes.xyz",
+              "color.xyz", "position.xyz", "texel.xyz", "materialParams.e.xyz",
+              # ".io" — dispatchery i ogony pakietow Javy
+              "Dispatchers.IO", "ExecutorProvider.IO", "Schedulers.io",
+              "Socket.IO", "Ljava.io", "Start.io",
+              # ".tk"
+              "T.Tk"):
+        assert not _domena_jest_iocem(d), d
+
+
+def test_krotka_subdomena_cdn_zachowana():
+    # Kontrprzyklad, ktory przesadzil o ksztalcie reguly. Kusilo, zeby odrzucac
+    # jednoznakowa pierwsza etykiete ("x.print.processor.info"), ale pomiar na
+    # bazie pokazal koszt: to prawdziwe hosty sieci reklamowej Ogury.
+    # Trzeci raz w tym module ta sama pomylka — po g.co i a.applovin.com.
+    for d in ("s.presage.io", "s.cloud.ogury.io", "s.qa.cloud.ogury.io"):
+        assert _domena_jest_iocem(d), d
+
+
+def test_prawdziwe_domeny_na_top_i_info_zachowane():
+    # Kontrprzyklad: te TLD sa tanie i wlasnie dlatego popularne wsrod C2.
+    # bsqzx.xyz i poker-rooms.top pochodza z probek wykrytych przez VT,
+    # wiec regula nie moze wycinac tych koncowek hurtem.
+    for d in ("poker-rooms.top", "cln9vhvfo2.top", "api.zold.top",
+              "play.xpass.top", "api.waqi.info", "pirate-bay.info",
+              "receive-sms-online.info", "mp3pn.info",
+              # .xyz/.io/.tk sa tanie i wlasnie dlatego popularne wsrod C2
+              "bsqzx.xyz", "pdlinkfortysix.xyz", "trkpp.xyz", "vidsrc.xyz",
+              "api16-access-sg.pangle.io", "rx2.io", "ktor.io", "msg.io",
+              "darkplaykids.tk", "www.darkplayapp.tk"):
+        assert _domena_jest_iocem(d), d
+
+
+def test_krotka_ale_prawdziwa_domena_zachowana():
+    # Trzeci kontrprzyklad, ktory zmienil regule: odrzucanie kazdej etykiety
+    # o dlugosci <= 2 zabieralo www.6b.top. Czysto literowe "a"/"s"/"j" to
+    # nazwy zmiennych po minifikacji, ale "6b" to prawdziwa krotka domena.
+    for d in ("www.6b.top", "tws.6b.top"):
+        assert _domena_jest_iocem(d), d
+
+
+# ── Dead-dropy ───────────────────────────────────────────────────────────────
+
+def test_cloudflare_workers_to_deaddrop():
+    # Ta sama klasa darmowej infrastruktury co .pages.dev. W bazie bylo
+    # 9 takich hostow i zaden nie byl klasyfikowany jako dead-drop —
+    # w tym sync.softwaremirror.workers.dev z probki wykrytej przez 30/75.
+    for d in ("sync.softwaremirror.workers.dev",
+              "damp-mouse-4d5a.smashystream.workers.dev",
+              "m3u8.justchill.workers.dev",
+              "multiplecdnqualities.apps-anime.workers.dev"):
+        assert _WORKERS_DEV_RE.findall(d) == [d], d
+
+
+def test_goly_workers_dev_to_nie_deaddrop():
+    # Sama domena platformy nie jest IOC — dopiero konkretne konto.
+    assert _WORKERS_DEV_RE.findall("workers.dev") == []
+
+
 # ── Cele ataku: slowa-klucze dopasowane do segmentow, nie do podciagow ────────
 
 def test_kawa_module_nie_jest_celem():
@@ -140,6 +208,32 @@ def test_ip_dokumentacyjne_odsiane():
     # 123.45.67.89 z com.icecoldapps.serversultimate to wzorzec w UI apki.
     for ip in ("123.45.67.89", "192.0.2.15", "198.51.100.7", "203.0.113.200"):
         assert not _is_plausible_ip(ip), ip
+
+
+def test_numery_wersji_nie_sa_adresami():
+    # Jedna probka (ibisPaint X) dala dziesiec takich naraz. W calej bazie
+    # 26 ze 127 adresow ma wszystkie oktety <= 30 i kazdy jest numerem wersji.
+    for ip in ("6.4.2.1", "8.3.6.1", "9.7.0.3", "13.6.2.0", "22.7.0.1",
+               "23.3.0.1", "9.14.12.0", "6.17.0.1", "30.0.0.20"):
+        assert not _is_plausible_ip(ip), ip
+
+
+def test_resolwery_o_jednakowych_oktetach_zachowane():
+    # Kontrprzyklad: 8.8.8.8 ma wszystkie oktety <= 30, ale to adres, nie wersja.
+    # Numer wersji nigdy nie ma czterech jednakowych czlonow.
+    #
+    # Bez 1.1.1.1 celowo: ten adres odrzuca WCZESNIEJSZA regula, bo "1" jest
+    # poczatkiem lukow OID w X.509 (2.5.4.3 = commonName itd.). To zachowanie
+    # sprzed tej zmiany i osobny kompromis — resolwer Cloudflare jest cena za
+    # odsianie fragmentow OID-ow, ktorych bylo w bazie duzo wiecej.
+    for ip in ("8.8.8.8", "9.9.9.9"):
+        assert _is_plausible_ip(ip), ip
+
+
+def test_adres_z_portem_nie_jest_wersja():
+    # Port oznacza kontekst sieciowy — takiego zapisu nie generuje numer wersji.
+    assert _is_plausible_ip("30.10.216.161:12580")
+    assert _is_plausible_ip("8.210.95.146:8089")
 
 
 def test_prawdziwe_ip_przechodzi():

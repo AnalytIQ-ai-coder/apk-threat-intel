@@ -15,7 +15,8 @@ import sqlite3
 import sys
 from datetime import datetime
 
-from dex_analyzer import _is_plausible_ip, _jest_publicznym_resolwerem, _odsiej_sekwencyjne_ip
+from dex_analyzer import (_domena_jest_iocem, _is_plausible_ip,
+                          _jest_publicznym_resolwerem, _odsiej_sekwencyjne_ip)
 from ioc_extractor import _GITHUB_RAW_RE, _is_valid_btc, _is_valid_tron, _telegram_standardowy
 
 DB = os.path.join("output", "threat_intel.db")
@@ -75,6 +76,14 @@ def zbedne_wpisy(c):
         for rid, wartosc in wpisy:
             if wartosc not in zostaja:
                 dodaj(rid, "sekwencyjne pseudo-IP (numery wersji)")
+
+    # Domeny: _DOMAIN_RE widzi tylko ogon stringa zakonczony czyms, co wyglada
+    # na TLD, wiec do bazy trafily nazwy klas Javy ("StreamBitmapDecoder.com"),
+    # swizzle GLSL z shaderow ("fragColor.xyz"), ogony pakietow
+    # ("org.openjsse.net") i placeholdery z dokumentacji ("www.example.com").
+    for r in c.execute("SELECT id, value FROM iocs WHERE ioc_type='domain'"):
+        if not _domena_jest_iocem(r["value"]):
+            dodaj(r["id"], "identyfikatory z kodu udajace domeny")
 
     return ids, powody
 
