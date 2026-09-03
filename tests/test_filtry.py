@@ -16,6 +16,7 @@ from dex_analyzer import (  # noqa: E402
     _find_targeted_packages,
     _is_plausible_ip,
 )
+from ioc_extractor import _WORKERS_DEV_RE  # noqa: E402
 
 OVERLAY = ["android.permission.SYSTEM_ALERT_WINDOW"]
 SMS = ["android.permission.RECEIVE_SMS"]
@@ -89,6 +90,52 @@ def test_prawdziwe_domeny_przechodza():
     for d in ("panel.mp3pn.info", "evil-c2.top", "mp3pn.info",
               "captrustdb-default-rtdb.firebaseio.com", "deephost.in"):
         assert _domena_jest_iocem(d), d
+
+
+def test_tld_kolidujace_z_kodem_odsiane():
+    # ".top" i ".info" koliduja z geometria/CSS i z logowaniem czesciej niz
+    # jakikolwiek inny TLD. W bazie na 36 domen ".top" prawdziwe byly cztery.
+    for d in ("Rect.top", "LocalRect.top", "SystemUiOverlay.top", "window.top",
+              "a.style.top", "a.top", "a.j.top", "console.info", "Log.INFO",
+              "Log.private.info", "s.INFO", "Sharp.Info", "EVENTS.INFO",
+              "feature.screen.info", "x.print.processor.info"):
+        assert not _domena_jest_iocem(d), d
+
+
+def test_prawdziwe_domeny_na_top_i_info_zachowane():
+    # Kontrprzyklad: te TLD sa tanie i wlasnie dlatego popularne wsrod C2.
+    # bsqzx.xyz i poker-rooms.top pochodza z probek wykrytych przez VT,
+    # wiec regula nie moze wycinac tych koncowek hurtem.
+    for d in ("poker-rooms.top", "cln9vhvfo2.top", "api.zold.top",
+              "play.xpass.top", "api.waqi.info", "pirate-bay.info",
+              "receive-sms-online.info", "mp3pn.info"):
+        assert _domena_jest_iocem(d), d
+
+
+def test_krotka_ale_prawdziwa_domena_zachowana():
+    # Trzeci kontrprzyklad, ktory zmienil regule: odrzucanie kazdej etykiety
+    # o dlugosci <= 2 zabieralo www.6b.top. Czysto literowe "a"/"s"/"j" to
+    # nazwy zmiennych po minifikacji, ale "6b" to prawdziwa krotka domena.
+    for d in ("www.6b.top", "tws.6b.top"):
+        assert _domena_jest_iocem(d), d
+
+
+# ── Dead-dropy ───────────────────────────────────────────────────────────────
+
+def test_cloudflare_workers_to_deaddrop():
+    # Ta sama klasa darmowej infrastruktury co .pages.dev. W bazie bylo
+    # 9 takich hostow i zaden nie byl klasyfikowany jako dead-drop —
+    # w tym sync.softwaremirror.workers.dev z probki wykrytej przez 30/75.
+    for d in ("sync.softwaremirror.workers.dev",
+              "damp-mouse-4d5a.smashystream.workers.dev",
+              "m3u8.justchill.workers.dev",
+              "multiplecdnqualities.apps-anime.workers.dev"):
+        assert _WORKERS_DEV_RE.findall(d) == [d], d
+
+
+def test_goly_workers_dev_to_nie_deaddrop():
+    # Sama domena platformy nie jest IOC — dopiero konkretne konto.
+    assert _WORKERS_DEV_RE.findall("workers.dev") == []
 
 
 # ── Cele ataku: slowa-klucze dopasowane do segmentow, nie do podciagow ────────

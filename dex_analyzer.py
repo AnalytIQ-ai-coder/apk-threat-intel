@@ -59,6 +59,22 @@ _TLD_NA_POCZATKU_PAKIETU = frozenset({
 # Placeholdery z dokumentacji i tutoriali. Dopasowanie DOKLADNE, nie po
 # podciagu: "dynamicdns.park-your-domain.com" to prawdziwy dostawca dyn-DNS,
 # a zawiera w sobie "domain.com".
+# ".top" i ".info" koliduja z identyfikatorami czestszymi niz jakiekolwiek inne:
+# geometria i CSS (rect.top, window.top, a.style.top) oraz logowanie
+# (console.info, Log.INFO). W bazie na 36 domen ".top" prawdziwe sa cztery,
+# a na 63 domeny ".info" okolo pieciu. NIE mozna ich wyciac hurtem —
+# poker-rooms.top i cln9vhvfo2.top to realne C2 — wiec zamiast tego podnosimy
+# dla nich prog wiarygodnosci w _domena_jest_iocem.
+_TLD_KOLIDUJACE_Z_KODEM = frozenset({"top", "info"})
+
+# Nazwy wlasciwosci i obiektow, po ktorych czesto nastepuje ".top" albo ".info"
+# w kodzie. Sprawdzane w KAZDEJ etykiecie, bo wzorzec bywa zagniezdzony
+# ("a.style.top", "Log.private.info", "feature.screen.info").
+_WLASCIWOSCI_UDAJACE_HOST = frozenset({
+    "style", "window", "console", "log", "screen", "feature",
+    "document", "parent", "rect", "layout", "bounds",
+})
+
 _DOMENY_PLACEHOLDER = frozenset({
     "example.com", "www.example.com", "example.org", "www.example.org",
     "example.net", "www.example.net", "domain.com", "www.domain.com",
@@ -199,6 +215,24 @@ def _domena_jest_iocem(value: str) -> bool:
     # prawdziwymi domenami i nie wolno ich zgubic.
     if len(etykiety) == 2 and len(etykiety[0]) == 1 and etykiety[1].lower() == "xyz":
         return False
+
+    if etykiety[-1].lower() in _TLD_KOLIDUJACE_Z_KODEM:
+        # DNS zapisuje sie malymi literami; ".Top" albo ".INFO" to stala w kodzie.
+        if not etykiety[-1].islower():
+            return False
+        # Wielka litera w etykiecie przed TLD: "Rect.top", "SystemUiOverlay.top".
+        if any(z.isupper() for z in etykiety[-2]):
+            return False
+        # Krotkie etykiety czysto literowe to nazwy zmiennych po minifikacji
+        # ("a.top", "s.INFO", "a.j.top"). Warunek "tylko litery" jest istotny:
+        # bez niego regula zabierala www.6b.top i tws.6b.top, czyli krotka,
+        # ale prawdziwa domene.
+        if len(etykiety[-2]) <= 2 and etykiety[-2].isalpha():
+            return False
+        if len(etykiety[0]) <= 1:
+            return False  # "x.print.processor.info"
+        if any(e.lower() in _WLASCIWOSCI_UDAJACE_HOST for e in etykiety[:-1]):
+            return False
 
     return True
 

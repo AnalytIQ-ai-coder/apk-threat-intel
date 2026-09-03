@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS iocs (
     sha256 TEXT NOT NULL,
     ioc_type TEXT NOT NULL,   -- url, ip, domain, btc, eth, tron, telegram,
                               -- whatsapp, discord_webhook, github_deaddrop,
-                              -- firebase_rtdb, pages_dev
+                              -- firebase_rtdb, pages_dev, workers_dev
     value TEXT NOT NULL,
     first_seen TEXT,
     FOREIGN KEY (sha256) REFERENCES samples(sha256)

@@ -34,6 +34,15 @@ _GITHUB_RAW_RE = re.compile(
 )
 _FIREBASE_RTDB_RE = re.compile(r'[a-z0-9\-]{3,50}-default-rtdb\.firebaseio\.com')
 _PAGES_DEV_RE = re.compile(r'[a-z0-9\-]{3,50}\.pages\.dev')
+# Cloudflare Workers to ta sama klasa darmowej infrastruktury przekazujacej co
+# Pages: konto zaklada sie w minute, subdomena jest za darmo, a ruch wychodzi
+# z adresow Cloudflare. W bazie mielismy 9 takich hostow (m.in.
+# sync.softwaremirror.workers.dev z probki wykrytej przez 30/75 silnikow)
+# i zaden nie byl klasyfikowany jako dead-drop.
+# Adres ma postac [<worker>.]<konto>.workers.dev — pierwszy czlon bywa pominiety.
+_WORKERS_DEV_RE = re.compile(
+    r"(?:[a-z0-9\-]{1,63}\.)?[a-z0-9\-]{3,50}\.workers\.dev"
+)
 
 _WALLET_BLACKLIST_SUBSTR = (
     "1111111111", "0000000000",
@@ -177,6 +186,7 @@ def extract_iocs(apk_path: str) -> dict:
     github_deaddrops = {m for m in _GITHUB_RAW_RE.findall(text)}
     firebase_rtdb = {m for m in _FIREBASE_RTDB_RE.findall(text)}
     pages_dev = {m for m in _PAGES_DEV_RE.findall(text)}
+    workers_dev = {m for m in _WORKERS_DEV_RE.findall(text)}
 
     return {
         "wallets": {
@@ -193,6 +203,7 @@ def extract_iocs(apk_path: str) -> dict:
             "github": sorted(github_deaddrops),
             "firebase_rtdb": sorted(firebase_rtdb),
             "pages_dev": sorted(pages_dev),
+            "workers_dev": sorted(workers_dev),
         },
     }
 

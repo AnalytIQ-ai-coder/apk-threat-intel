@@ -161,6 +161,7 @@ def generate_abuse_reports(results: list[dict]) -> list[dict]:
         candidates += iocs.get("dead_drops", {}).get("github", [])
         candidates += iocs.get("dead_drops", {}).get("firebase_rtdb", [])
         candidates += iocs.get("dead_drops", {}).get("pages_dev", [])
+        candidates += iocs.get("dead_drops", {}).get("workers_dev", [])
 
         for value in candidates:
             host = _host_of(value)
