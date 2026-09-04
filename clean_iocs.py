@@ -119,8 +119,41 @@ def czysc_baze(apply_):
             if pozostale == 0:
                 znikajace.add(w)
 
-    if apply_ and (do_usuniecia or do_poprawy):
-        c.executemany("DELETE FROM iocs WHERE id=?", [(i,) for i in do_usuniecia])
+    # --- normalizacja wielkosci liter w domenach ---
+    # Odpowiednik _normalizuj_ioc z threat_db dla wierszy zapisanych wczesniej.
+    # DNS nie rozroznia wielkosci liter, wiec "LITEAPKS.COM", "Liteapks.com"
+    # i "liteapks.com" to jeden host lezacy w bazie jako trzy wiersze, ktore
+    # nigdy sie ze soba nie skoreluja.
+    juz_poprawiane = {i for i, _ in do_poprawy}
+    pomijane = set(do_usuniecia)
+    na_male_litery = []
+    for r in c.execute("SELECT id, value FROM iocs WHERE ioc_type='domain'"):
+        if r["id"] in juz_poprawiane or r["id"] in pomijane:
+            continue
+        mala = bez_znakow_sterujacych(r["value"]).lower()
+        if mala != r["value"]:
+            na_male_litery.append((r["id"], mala))
+    do_poprawy.extend(na_male_litery)
+
+    # Po sprowadzeniu do malych liter czesc wierszy staje sie duplikatami
+    # w obrebie tej samej probki. Zostawiamy najstarszy (najnizsze id).
+    # Te ida osobna lista, a NIE do do_usuniecia: wartosc nie znika z bazy,
+    # tylko zmienia zapis, wiec nie wolno jej wycinac z eksportow.
+    widziane, duplikaty_po_normalizacji = set(), []
+    for r in c.execute("SELECT id, sha256, value FROM iocs WHERE ioc_type='domain' ORDER BY id"):
+        klucz = (r["sha256"], bez_znakow_sterujacych(r["value"]).lower())
+        if klucz in widziane:
+            duplikaty_po_normalizacji.append(r["id"])
+        else:
+            widziane.add(klucz)
+    skasowane = set(do_usuniecia) | set(duplikaty_po_normalizacji)
+    do_poprawy = [(i, v) for i, v in do_poprawy if i not in skasowane]
+    print(f"  {'domeny do sprowadzenia na male litery':.<42} {len(na_male_litery)}")
+    print(f"  {'duplikaty po normalizacji':.<42} {len(duplikaty_po_normalizacji)}")
+
+    if apply_ and (do_usuniecia or do_poprawy or duplikaty_po_normalizacji):
+        c.executemany("DELETE FROM iocs WHERE id=?",
+                      [(i,) for i in list(do_usuniecia) + duplikaty_po_normalizacji])
         c.executemany("UPDATE iocs SET value=? WHERE id=?",
                       [(v, i) for i, v in do_poprawy])
         conn.commit()

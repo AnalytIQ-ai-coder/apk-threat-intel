@@ -84,6 +84,30 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalizuj_ioc(ioc_type: str, value: str) -> str:
+    """Sprowadza domeny do malych liter. Wylacznie domeny.
+
+    DNS jest niewrazliwy na wielkosc liter, wiec "LITEAPKS.COM", "Liteapks.com"
+    i "liteapks.com" to jeden host. Bez tego leza w bazie jako trzy osobne
+    wiersze, nie korelujac sie ze soba: zapytanie o powtorzenia IOC porownuje
+    wartosci operatorem "=", ktory w SQLite jest wrazliwy na wielkosc liter,
+    wiec te same domeny w roznych probkach nie tworzyly powiazania.
+
+    Czego NIE wolno tu ruszac:
+      * url  — sciezka i query sa wrazliwe na wielkosc liter,
+               "/AbC" to nie to samo co "/abc";
+      * wallet_eth — wielkosc liter niesie sume kontrolna EIP-55;
+      * wallet_btc / wallet_tron — Base58Check w ogole nie zniesie zmiany;
+      * kontakty (telegram, discord) — nicki bywaja wyswietlane doslownie.
+
+    Sygnal "wielka litera znaczy identyfikator z kodu" nie ginie: rozstrzyga
+    o nim _domena_jest_iocem jeszcze przed zapisem.
+    """
+    if ioc_type == "domain":
+        return value.lower()
+    return value
+
+
 def store_sample(data: dict, iocs: dict) -> dict:
     """Zapisuje próbkę + jej IOC. Zwraca korelacje: co z tych IOC już widzieliśmy."""
     init_db()
@@ -159,6 +183,7 @@ def store_sample(data: dict, iocs: dict) -> dict:
                     flat.append((f"deaddrop_{kind}", v))
 
         for ioc_type, value in flat:
+            value = _normalizuj_ioc(ioc_type, value)
             existing = conn.execute(
                 "SELECT DISTINCT s.sha256, s.filename FROM iocs i "
                 "JOIN samples s ON s.sha256 = i.sha256 "
