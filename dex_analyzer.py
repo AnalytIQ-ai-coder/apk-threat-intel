@@ -195,7 +195,59 @@ def _is_whitelisted(value: str) -> bool:
     return any(lower.startswith(p) for p in _JAVA_PACKAGE_PREFIXES)
 
 
-def _domena_jest_iocem(value: str) -> bool:
+# Segment identyfikatora — to, co moze stac tuz obok dopasowania, gdy regex
+# trafil w srodek dluzszej nazwy z kropkami.
+_SEGMENT_IDENTYFIKATORA = re.compile(r"[A-Za-z0-9_]+")
+
+
+def _jest_fragmentem_identyfikatora(kontekst: str, poczatek: int, koniec: int) -> bool:
+    """Czy dopasowanie to wycinek dluzszej nazwy z kropkami, a nie samodzielny host.
+
+    Zmierzone na piatce prawdziwych APK: tak powstaje wiekszosc falszywek,
+    ktorych nie da sie odsiac patrzac na sama wartosc dopasowania.
+    "camerax.core.io" pochodzi z "camerax.core.io.ioExecutor", "client.dev"
+    z flagi Firebase "..._stitching_token.client.dev", "br.com" z
+    "br.com.eventim.mobile.app.Android", a "rx2.io" z wlasciwosci RxJavy
+    "rx2.io-priority".
+    """
+    # OGON dluzszej nazwy. Warunek na znak PRZED kropka jest tu istotny i nie
+    # da sie go pominac: sam fakt, ze przed dopasowaniem stoi kropka, nie
+    # wystarcza. Regex nie siega w lewo tylko wtedy, gdy poprzednia etykieta ma
+    # znak spoza [a-z0-9-]. Jesli tym znakiem jest litera, cyfra albo
+    # podkreslnik, mamy identyfikator ("..._token.client.dev", albo sklejke
+    # z puli stringow: "h3_tun.rs" + "cdnjs.cloudflare.com"). Jesli to
+    # interpunkcja, to prawdziwy host z obcietym przedrostkiem —
+    # "*.cloudflareclient.com", "<gateway_unique_id>.cloudflare-gateway.com" —
+    # i wyrzucenie go byloby strata. Wersja bez tego warunku zabierala
+    # cztery realne hosty Cloudflare na jednej probce.
+    if poczatek >= 2 and kontekst[poczatek - 1] == "." and (
+        kontekst[poczatek - 2].isalnum() or kontekst[poczatek - 2] == "_"
+    ):
+        return True
+
+    po = kontekst[koniec:]
+    # GLOWA dluzszej nazwy: zaraz za rzekomym TLD idzie kolejny czlon.
+    if po[:1] == ".":
+        m = _SEGMENT_IDENTYFIKATORA.match(po[1:])
+        # Prog 3 znakow chroni domeny z dwuczlonowym TLD: dla "example.com.br"
+        # regex zwraca "example.com", a koncowka ".br" nie moze przesadzac,
+        # ze to identyfikator.
+        if m and len(m.group()) >= 3:
+            return True
+    # Myslnik po TLD wystepuje we wlasciwosciach systemowych ("rx2.io-priority",
+    # "rx2.io-keep-alive-time"). Zawezone do czlonu czysto literowego, bo
+    # "index.crates.io-6f17d22bba15001f" to sciezka rejestru Cargo, w ktorej
+    # index.crates.io jest prawdziwym hostem.
+    if po[:1] == "-":
+        m = _SEGMENT_IDENTYFIKATORA.match(po[1:])
+        if m and len(m.group()) >= 3 and m.group().isalpha():
+            return True
+
+    return False
+
+
+def _domena_jest_iocem(value: str, kontekst: str = "", poczatek: int = 0,
+                       koniec: int = 0) -> bool:
     """Czy dopasowanie _DOMAIN_RE to faktycznie host, a nie identyfikator z kodu.
 
     Regex widzi wylacznie ogon stringa zakonczony czyms, co wyglada na TLD,
@@ -212,7 +264,19 @@ def _domena_jest_iocem(value: str) -> bool:
     if value.lower() in _DOMENY_PLACEHOLDER:
         return False
 
+    # Kontekst podaje sie tylko przy ekstrakcji z DEX-a. clean_iocs.py wola te
+    # funkcje na gotowych wartosciach z bazy, gdzie kontekstu juz nie ma —
+    # wtedy ten test jest po prostu pomijany.
+    if kontekst and _jest_fragmentem_identyfikatora(kontekst, poczatek, koniec):
+        return False
+
     etykiety = value.split(".")
+
+    # Numer wersji udajacy host: "1.3.17.dev", "2.6.8.dev". Wymagane co najmniej
+    # DWIE etykiety numeryczne przed TLD — przy jednej regula zabralaby
+    # 10010.com i 10086.cn, czyli prawdziwe domeny chinskich operatorow.
+    if len(etykiety) >= 3 and all(e.isdigit() for e in etykiety[:-1]):
+        return False
 
     if etykiety[0].lower() in _TLD_NA_POCZATKU_PAKIETU:
         return False  # odwrocony DNS -> nazwa pakietu, nie host
@@ -707,9 +771,9 @@ def analyze_dex(apk_path: str, own_package: str = "", permissions=()) -> dict:
         for m in _IP_RE.findall(s):
             if _is_plausible_ip(m):
                 ips.add(m)
-        for m in _DOMAIN_RE.findall(s):
-            if _domena_jest_iocem(m):
-                domains.add(m)
+        for m in _DOMAIN_RE.finditer(s):
+            if _domena_jest_iocem(m.group(), s, m.start(), m.end()):
+                domains.add(m.group())
 
     decoded_b64 = _decode_base64_strings(strings)
     for text in decoded_b64:

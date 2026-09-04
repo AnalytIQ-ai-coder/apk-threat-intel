@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dex_analyzer import (  # noqa: E402
+    _DOMAIN_RE,
     _domena_jest_iocem,
     _find_targeted_packages,
     _is_plausible_ip,
@@ -239,6 +240,92 @@ def test_adres_z_portem_nie_jest_wersja():
 def test_prawdziwe_ip_przechodzi():
     for ip in ("8.8.8.8", "45.132.11.7", "185.220.101.44"):
         assert _is_plausible_ip(ip), ip
+
+
+# ── Domeny: dopasowanie w srodku dluzszego identyfikatora ────────────────────
+# Kazdy kontekst nizej jest DOSLOWNYM stringiem z DEX-a pobranej probki,
+# nie rekonstrukcja. Zrodla: 61109fcc (com.appsgenz.launcherios.pro),
+# 77c444c4 (com.cloudflare.onedotonedotonedotone), 2072c29a (Rasmlar5.apk).
+
+def _werdykt(kontekst, oczekiwana):
+    """Puszcza kontekst przez ten sam regex co pipeline i ocenia wskazane trafienie."""
+    for m in _DOMAIN_RE.finditer(kontekst):
+        if m.group() == oczekiwana:
+            return _domena_jest_iocem(m.group(), kontekst, m.start(), m.end())
+    raise AssertionError(f"regex nie znalazl {oczekiwana!r} w {kontekst!r}")
+
+
+def test_glowa_dluzszego_identyfikatora_odsiana():
+    # "camerax.core.io" to nazwa watku CameraX, "br.com" poczatek odwroconego
+    # DNS-u, "rx2.io" wlasciwosc systemowa RxJavy. W bazie kolejno 13, 15 i 37
+    # probek — najliczniejsza klasa falszywek, jakiej nie da sie rozpoznac
+    # po samej wartosci dopasowania.
+    assert not _werdykt("camerax.core.io.ioExecutor", "camerax.core.io")
+    assert not _werdykt("pl.eobuwie.eobuwieapp,br.com.eventim.mobile.app.Android", "br.com")
+    assert not _werdykt("rx2.io-priority", "rx2.io")
+    assert not _werdykt("rx2.io-keep-alive-time", "rx2.io")
+
+
+def test_ogon_dluzszego_identyfikatora_odsiany():
+    # Flagi Firebase/Measurement. Regex nie siega w lewo, bo etykieta przed
+    # kropka ma podkreslnik, wiec zostaje sam ogon wygladajacy jak host.
+    assert not _werdykt(
+        "measurement.collection.enable_session_stitching_token.client.dev", "client.dev")
+    assert not _werdykt(
+        "measurement.set_default_event_parameters_propagate_clear.service.dev", "service.dev")
+    # Sklejka z puli stringow: "warp-edge/src/h3_tun.rs" + "cdnjs.cloudflare.com"
+    # daja nieistniejacy host "rscdnjs.cloudflare.com".
+    assert not _werdykt(
+        "{{closure}}warp-edge/src/h3_tun.rscdnjs.cloudflare.com", "rscdnjs.cloudflare.com")
+
+
+def test_host_z_obcietym_przedrostkiem_zachowany():
+    # KONTRPRZYKLAD do testu wyzej i najwazniejszy assert w tym pliku.
+    # Pierwsza wersja reguly odrzucala wszystko, przed czym stala kropka —
+    # i zabierala cztery prawdziwe hosty Cloudflare z jednej probki.
+    # Rozstrzyga znak PRZED kropka: identyfikator znaczy "smiec",
+    # interpunkcja znaczy "prawdziwy host z wycietym przedrostkiem".
+    assert _werdykt("*.cloudflareclient.com", "cloudflareclient.com")
+    assert _werdykt("resolves DNS via DoH to `<gateway_unique_id>.cloudflare-gateway.com`",
+                    "cloudflare-gateway.com")
+    assert _werdykt(".is-cf.cloudflareresolve.com/resolvertest", "is-cf.cloudflareresolve.com")
+
+
+def test_host_w_sciezce_z_myslnikiem_zachowany():
+    # KONTRPRZYKLAD do reguly na myslnik. "index.crates.io" to prawdziwy host
+    # rejestru Cargo, tyle ze wystepuje w nazwie katalogu z sufiksem-hashem.
+    # Dlatego myslnikowa galaz wymaga czlonu czysto literowego ("-priority"),
+    # a nie dowolnego ("-6f17d22bba15001f").
+    assert _werdykt("/root/.cargo/registry/src/index.crates.io-6f17d22bba15001f/chrono-0.4.22",
+                    "index.crates.io")
+
+
+def test_host_w_url_zachowany():
+    # Ukosnik przed hostem i za nim nie jest znakiem identyfikatora.
+    assert _werdykt("https://liteapks.com/app.html", "liteapks.com")
+    assert _werdykt("http://g.co/dev/packagevisibility.", "g.co")
+
+
+def test_wersja_udajaca_domene_odsiana():
+    # Wersje pythonowe z pakietow: 1.3.17.dev, 2.6.8.dev — 5 wierszy w bazie.
+    for d in ("1.2.5.dev", "1.3.13.dev", "1.3.17.dev", "2.3.17.dev", "2.6.8.dev"):
+        assert not _domena_jest_iocem(d), d
+
+
+def test_domeny_z_samych_cyfr_zachowane():
+    # KONTRPRZYKLAD: wymog DWOCH etykiet numerycznych nie jest ozdobnikiem.
+    # 10010 to China Unicom, 10086 to China Mobile — prawdziwe domeny.
+    assert _domena_jest_iocem("10010.com")
+    assert _domena_jest_iocem("10086.cn")
+
+
+def test_brak_kontekstu_nie_zmienia_werdyktu():
+    # clean_iocs.py wola te funkcje na wartosciach z bazy, gdzie kontekstu juz
+    # nie ma. Bez kontekstu test na fragment identyfikatora ma byc pomijany,
+    # a nie zgadywany.
+    assert _domena_jest_iocem("bsqzx.xyz")
+    assert _domena_jest_iocem("banxicoprotec.org")
+    assert _domena_jest_iocem("camerax.core.io")  # bez kontekstu nie da sie orzec
 
 
 if __name__ == "__main__":

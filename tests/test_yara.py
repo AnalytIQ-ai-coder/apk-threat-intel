@@ -100,6 +100,108 @@ def test_zaden_plik_regul_sie_nie_wysypal():
     assert yara_scanner.bledne_pliki_regul() == []
 
 
+# ── Klaster "APK Signer / Earth" ─────────────────────────────────────────────
+# Bajty ponizej sa WYCIETE z prawdziwej probki b46b27b8 (MAX_VIDE0), a nie
+# wymyslone: fragment DER podmiotu certyfikatu i jego okres waznosci.
+# Zapisane szesnastkowo celowo — literal bajtowy z sekwencjami ucieczki juz raz
+# w tym repo wpisal do pliku prawdziwy bajt NUL i zepsul modul.
+EARTH_DN = bytes.fromhex("040b0c054561727468311330110603550403" "0c0a41504b205369676e6572")
+EARTH_WAZNOSC = bytes.fromhex(
+    "301e170d3139303930333233303332345a170d3439313032353233303332345a")
+
+# Uprawnienia o nazwach zaczynajacych sie od cyfry, tak jak w probce.
+# Pula stringow AXML jest UTF-16, stad kodowanie — regula uzywa "wide".
+MANIFEST_EARTH = (
+    bytes(16)
+    + "android.permission.1TKPV12F".encode("utf-16-le")
+    + bytes(8)
+    + "android.permission.4Q83E7I3WD".encode("utf-16-le")
+    + bytes(16)
+)
+
+
+def _zbuduj_apk_earth(katalog, nazwa, cert=True, wabiki=True, perm_od_cyfry=True):
+    p = os.path.join(katalog, nazwa)
+    with zipfile.ZipFile(p, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("classes.dex", bytes(256))
+        z.writestr("resources.arsc", bytes(256))
+        z.writestr("AndroidManifest.xml",
+                   MANIFEST_EARTH if perm_od_cyfry else bytes(64))
+        if cert:
+            # STORED, bo w prawdziwym APK blok podpisu lezy poza wpisami ZIP
+            # i jest nieskompresowany — regula szuka go w surowych bajtach.
+            info = zipfile.ZipInfo("META-INF/CERT.RSA")
+            info.compress_type = zipfile.ZIP_STORED
+            z.writestr(info, bytes(32) + EARTH_DN + EARTH_WAZNOSC + bytes(32))
+        if wabiki:
+            # Zarezerwowane nazwy APK uzyte jako katalogi. Kazda nazwa wpisu
+            # trafia do pliku dwa razy (naglowek lokalny + centralny katalog).
+            for i in range(6):
+                z.writestr(f"classes.dex/wabik{i}.jpg", b"x")
+                z.writestr(f"AndroidManifest.xml/wabik{i}.png", b"x")
+    return p
+
+
+def test_earth_wabiki_zip_trafia_w_prawdziwy_uklad():
+    with tempfile.TemporaryDirectory() as d:
+        p = _zbuduj_apk_earth(d, "earth.apk")
+        reguly = [m["rule"] for m in yara_scanner.scan(p)]
+        assert "Earth_Signer_Wabiki_ZIP" in reguly, reguly
+
+
+def test_earth_hunting_nie_dubluje_reguly_glownej():
+    # Ta sama pulapka, ktora w bsqzx_rentaapps.yar sprawila, ze druga regula
+    # nigdy by nie strzelila — tylko odwrotnie. Probka z pelnym odciskiem
+    # buildera ma trafiac WYLACZNIE w regule glowna, zeby trafienie w hunting
+    # zawsze znaczylo "ten sam klucz, ale inny build".
+    with tempfile.TemporaryDirectory() as d:
+        p = _zbuduj_apk_earth(d, "earth.apk")
+        reguly = [m["rule"] for m in yara_scanner.scan(p)]
+        assert "Earth_Signer_Klucz_Hunting" not in reguly, reguly
+
+
+def test_earth_sam_klucz_lapie_inny_build():
+    # Odpowiednik probki Rasmlar5: ten sam certyfikat, zaden marker buildera.
+    with tempfile.TemporaryDirectory() as d:
+        p = _zbuduj_apk_earth(d, "inny.apk", wabiki=False, perm_od_cyfry=False)
+        reguly = [m["rule"] for m in yara_scanner.scan(p)]
+        assert "Earth_Signer_Klucz_Hunting" in reguly, reguly
+        assert "Earth_Signer_Wabiki_ZIP" not in reguly, reguly
+
+
+def test_uprawnienia_od_cyfry_lapane_w_osobnej_regule():
+    # Pilnuje trzech rzeczy naraz: modyfikatora "wide", tego ze skaner
+    # naprawde rozpakowuje AndroidManifest.xml, oraz PODZIALU NA REGULY.
+    #
+    # Ten test powstal z bledu: pierwsza wersja earth_signer.yar wymagala
+    # w jednym warunku certyfikatu (widocznego tylko w przebiegu po surowych
+    # bajtach) I uprawnien (widocznych tylko w przebiegu po rozpakowanej
+    # zawartosci). Taka galaz nie moze strzelic nigdy. Marker manifestu musi
+    # wiec stac w regule, ktora nie odwoluje sie do niczego z surowych bajtow.
+    with tempfile.TemporaryDirectory() as d:
+        p = _zbuduj_apk_earth(d, "perm.apk", wabiki=False)
+        reguly = [m["rule"] for m in yara_scanner.scan(p)]
+        assert "APK_Uprawnienia_O_Nazwach_Od_Cyfry" in reguly, reguly
+
+
+def test_wabiki_bez_klucza_nie_sa_przypisywane_do_earth():
+    # Kontrprzyklad: sama technika nie moze przypisywac probki do klastra.
+    with tempfile.TemporaryDirectory() as d:
+        p = _zbuduj_apk_earth(d, "obcy.apk", cert=False)
+        reguly = [m["rule"] for m in yara_scanner.scan(p)]
+        assert "APK_Zarezerwowane_Nazwy_Jako_Katalogi" in reguly, reguly
+        assert "Earth_Signer_Wabiki_ZIP" not in reguly, reguly
+        assert "Earth_Signer_Klucz_Hunting" not in reguly, reguly
+
+
+def test_czysty_apk_nie_trafia_regul_earth():
+    with tempfile.TemporaryDirectory() as d:
+        p = _zbuduj_apk_earth(d, "czysty.apk", cert=False, wabiki=False,
+                              perm_od_cyfry=False)
+        reguly = [m["rule"] for m in yara_scanner.scan(p)]
+        assert not reguly, reguly
+
+
 if __name__ == "__main__":
     testy = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_")]
     bledy = 0
