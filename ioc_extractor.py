@@ -32,6 +32,28 @@ _GITHUB_RAW_RE = re.compile(
     r"|github\.com/[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}/raw/)"
     r"[A-Za-z0-9/._~:?#@!$&()*+,;=%-]{1,200}"
 )
+# Bitbucket dziala tu tak samo jak GitHub: publiczne repo, darmowe konto,
+# a plik pod /raw/ zwracany jest jako czysta tresc. Probki com.co.xb (NewPay)
+# i com.safe.xp (XPay) trzymaja tam liste aktualnych domen C2
+# (bitbucket.org/xpay2050/xinbipay/raw/main/domain.json), z kopia zapasowa
+# na storage obiektowym. Wczesniej trafialo to do bazy jako zwykly URL.
+#
+# Wymog "/raw/" jest tu tym, czym wykluczenie "/blob/" przy GitHubie: bez
+# niego regula zabralaby bitbucket.org/loganchien/clang i .../llvm, czyli
+# linki do zrodel toolchaina LLVM z komunikatow bibliotek. Pomiar na bazie
+# 12697 unikalnych IOC: 2 trafienia, oba prawdziwe, zero falszywek.
+#
+# Forma /downloads/ (hosting plikow wydania) NIE jest tu ujeta swiadomie —
+# nie mamy na nia ani jednej probki, a bez pomiaru groziloby to falszywkami
+# z legalnych linkow do bibliotek.
+_BITBUCKET_RAW_RE = re.compile(
+    r"(?:bitbucket\.org/[A-Za-z0-9_.-]{1,62}/[A-Za-z0-9_.-]{1,62}/raw/"
+    # Odpowiednik raw.githubusercontent.com po stronie Bitbucketa. Dodane przez
+    # analogie do reguly GitHuba, nie na podstawie pomiaru — ta sciezka nie ma
+    # innego zastosowania niz pobranie surowej tresci pliku.
+    r"|api\.bitbucket\.org/2\.0/repositories/[A-Za-z0-9_.-]{1,62}/[A-Za-z0-9_.-]{1,62}/src/)"
+    r"[A-Za-z0-9/._~:?#@!$&()*+,;=%-]{1,200}"
+)
 _FIREBASE_RTDB_RE = re.compile(r'[a-z0-9\-]{3,50}-default-rtdb\.firebaseio\.com')
 _PAGES_DEV_RE = re.compile(r'[a-z0-9\-]{3,50}\.pages\.dev')
 # Cloudflare Workers to ta sama klasa darmowej infrastruktury przekazujacej co
@@ -184,6 +206,7 @@ def extract_iocs(apk_path: str) -> dict:
     discord_webhooks = {m for m in _DISCORD_WEBHOOK_RE.findall(text)}
 
     github_deaddrops = {m for m in _GITHUB_RAW_RE.findall(text)}
+    bitbucket_deaddrops = {m for m in _BITBUCKET_RAW_RE.findall(text)}
     firebase_rtdb = {m for m in _FIREBASE_RTDB_RE.findall(text)}
     pages_dev = {m for m in _PAGES_DEV_RE.findall(text)}
     workers_dev = {m for m in _WORKERS_DEV_RE.findall(text)}
@@ -201,6 +224,7 @@ def extract_iocs(apk_path: str) -> dict:
         "discord_webhooks": sorted(discord_webhooks),
         "dead_drops": {
             "github": sorted(github_deaddrops),
+            "bitbucket": sorted(bitbucket_deaddrops),
             "firebase_rtdb": sorted(firebase_rtdb),
             "pages_dev": sorted(pages_dev),
             "workers_dev": sorted(workers_dev),
