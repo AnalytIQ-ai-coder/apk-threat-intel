@@ -24,3 +24,6 @@ venv/
 
 # apktool binary (23 MB)
 tools/apktool.jar
+
+# Testy trzymane lokalnie, poza repozytorium
+tests/
