@@ -159,6 +159,7 @@ def generate_abuse_reports(results: list[dict]) -> list[dict]:
         candidates = []
         candidates += iocs.get("discord_webhooks", [])
         candidates += iocs.get("dead_drops", {}).get("github", [])
+        candidates += iocs.get("dead_drops", {}).get("bitbucket", [])
         candidates += iocs.get("dead_drops", {}).get("firebase_rtdb", [])
         candidates += iocs.get("dead_drops", {}).get("pages_dev", [])
         candidates += iocs.get("dead_drops", {}).get("workers_dev", [])

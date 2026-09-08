@@ -17,7 +17,7 @@ from dex_analyzer import (  # noqa: E402
     _find_targeted_packages,
     _is_plausible_ip,
 )
-from ioc_extractor import _WORKERS_DEV_RE  # noqa: E402
+from ioc_extractor import _BITBUCKET_RAW_RE, _WORKERS_DEV_RE  # noqa: E402
 
 OVERLAY = ["android.permission.SYSTEM_ALERT_WINDOW"]
 SMS = ["android.permission.RECEIVE_SMS"]
@@ -326,6 +326,32 @@ def test_brak_kontekstu_nie_zmienia_werdyktu():
     assert _domena_jest_iocem("bsqzx.xyz")
     assert _domena_jest_iocem("banxicoprotec.org")
     assert _domena_jest_iocem("camerax.core.io")  # bez kontekstu nie da sie orzec
+
+
+# ── Dead-dropy: Bitbucket ────────────────────────────────────────────────────
+
+def test_bitbucket_raw_jest_dead_dropem():
+    # Probki com.co.xb (NewPay) i com.safe.xp (XPay) trzymaja na Bitbuckecie
+    # liste aktualnych domen C2. Wczesniej ladowalo to w bazie jako zwykly URL.
+    for u in ("https://bitbucket.org/xpay2050/xinbipay/raw/main/domain.json",
+              "https://bitbucket.org/xpay2050/xinbipay/raw/main/domain.json2"):
+        assert _BITBUCKET_RAW_RE.findall(u), u
+
+
+def test_bitbucket_api_src_jest_dead_dropem():
+    # Odpowiednik raw.githubusercontent.com po stronie Bitbucketa.
+    assert _BITBUCKET_RAW_RE.findall(
+        "https://api.bitbucket.org/2.0/repositories/acme/cfg/src/main/c2.json")
+
+
+def test_linki_do_zrodel_na_bitbuckecie_pomijane():
+    # KONTRPRZYKLAD, ktory wymusza wymog "/raw/" w regule — dokladnie tak samo,
+    # jak wykluczenie "/blob/" przy GitHubie. Te dwa adresy sa w bazie i
+    # pochodza z komunikatow bibliotek o toolchainie LLVM, nie z malware.
+    for u in ("https://bitbucket.org/loganchien/clang",
+              "https://bitbucket.org/loganchien/llvm",
+              "bitbucket.org"):
+        assert not _BITBUCKET_RAW_RE.findall(u), u
 
 
 if __name__ == "__main__":
