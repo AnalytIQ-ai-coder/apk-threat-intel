@@ -23,7 +23,17 @@ CREATE TABLE IF NOT EXISTS samples (
     ai_risk TEXT,
     first_seen TEXT,
     upload_time TEXT,
-    duplicate_count INTEGER DEFAULT 0
+    duplicate_count INTEGER DEFAULT 0,
+    -- Nazwa splitu z App Bundle (np. "config.arm64_v8a"). Odroznia probke,
+    -- ktora nie ma uprawnien, bo jest tylko kontenerem na biblioteki albo
+    -- zasoby, od takiej, ktora faktycznie o nic nie prosi.
+    -- Trzy stany, celowo rozroznione:
+    --   'config.xxx' — split,
+    --   ''           — sprawdzone, pelne APK,
+    --   NULL         — NIESPRAWDZONE (wiersz sprzed dodania tej kolumny).
+    -- Dzieki temu backfill_splits.py wie, co jeszcze zostalo do zrobienia,
+    -- i da sie go przerwac oraz wznowic.
+    split_name TEXT
 );
 
 CREATE TABLE IF NOT EXISTS iocs (
@@ -58,11 +68,15 @@ def _connect():
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(_SCHEMA)
-        # migracja dla baz utworzonych przed dodaniem duplicate_count
-        try:
-            conn.execute("ALTER TABLE samples ADD COLUMN duplicate_count INTEGER DEFAULT 0")
-        except sqlite3.OperationalError:
-            pass
+        # migracje dla baz utworzonych przed dodaniem kolumn
+        for ddl in (
+            "ALTER TABLE samples ADD COLUMN duplicate_count INTEGER DEFAULT 0",
+            "ALTER TABLE samples ADD COLUMN split_name TEXT",
+        ):
+            try:
+                conn.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
 
 
 # Publiczne klucze testowe AOSP (testkey/platform/shared/media) sa dolaczone do
@@ -127,9 +141,10 @@ def store_sample(data: dict, iocs: dict) -> dict:
         conn.execute(
             """INSERT OR REPLACE INTO samples
                (sha256, filename, package, app_name, cert_sha1, cert_subject,
-                vt_malicious, vt_total, malware_families, ai_risk, first_seen, upload_time)
+                vt_malicious, vt_total, malware_families, ai_risk, first_seen, upload_time,
+                split_name)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                       COALESCE((SELECT first_seen FROM samples WHERE sha256=?), ?), ?)""",
+                       COALESCE((SELECT first_seen FROM samples WHERE sha256=?), ?), ?, ?)""",
             (
                 sha256,
                 data.get("filename"),
@@ -143,6 +158,9 @@ def store_sample(data: dict, iocs: dict) -> dict:
                 ai.get("risk"),
                 sha256, now,
                 data.get("upload_time"),
+                # Pusty napis, nie NULL: probka przeszla przez wykrywanie i nie
+                # jest splitem. NULL rezerwujemy dla wierszy nigdy niesprawdzonych.
+                (data.get("split") or {}).get("nazwa") or "",
             ),
         )
 

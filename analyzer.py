@@ -26,7 +26,7 @@ os.makedirs("output", exist_ok=True)
 
 from mwdb_client import get_client
 from downloader import save_apk
-from manifest_parser import parse_apk_timeout
+from manifest_parser import parse_apk_timeout, split_bez_kodu
 from mailer import send_report
 from state import load_last_run, save_last_run
 from vt_client import check_sha256, upload_file
@@ -122,6 +122,17 @@ def print_result(data: dict):
     # zero-width), wiec escapujemy je bezwarunkowo - nic nie moze zniknac.
     table.add_row("Package", _sanitize_plain(data.get("package") or "N/A"))
     table.add_row("App name", _sanitize_plain(data.get("app_name") or "N/A"))
+
+    # Split z App Bundle to nie aplikacja, tylko jej kawalek. Mowimy o tym od
+    # razu pod nazwa, zeby puste "Permissions: none" nizej nie bylo czytane
+    # jako "ta aplikacja nic nie chce".
+    split = data.get("split")
+    if split:
+        opis = f"{split['nazwa']} (rodzaj: {split['rodzaj']}"
+        if split.get("ma_dex") is not None:
+            opis += ", z kodem" if split["ma_dex"] else ", bez kodu"
+        opis += ")"
+        table.add_row("[bold yellow]Split z AAB[/bold yellow]", opis)
     table.add_row("Version", f"{data.get('version_name')} ({data.get('version_code')})")
     table.add_row("Min SDK", str(data.get("min_sdk") or "N/A"))
     table.add_row("Target SDK", str(data.get("target_sdk") or "N/A"))
@@ -387,8 +398,19 @@ def main():
                 print(f"[dim][~] MobSF analysis...[/dim]")
                 data["mobsf"] = mobsf_analyze(apk_path, dynamic=MOBSF_DYNAMIC)
 
-            print(f"[dim][~] Asking AI...[/dim]")
-            data["ai"] = assess_risk(data)
+            if split_bez_kodu(data):
+                # Splitu konfiguracyjnego nie ma po co wysylac do modelu: nie ma
+                # uprawnien, komponentow ani DEX-a, wiec prompt skladalby sie
+                # z samych pustych pol. Model odpowiadal na to "RISK: low,
+                # brak uprawnien" i taka ocena szla do bazy — 164 wiersze w
+                # output/threat_intel.db powstaly wlasnie tak. To falszywy
+                # negatyw wygenerowany z niczego, a nie ocena probki.
+                powod = "split %s bez kodu — nie ma czego oceniac" % data["split"]["nazwa"]
+                print(f"[dim][~] Pomijam AI: {powod}[/dim]")
+                data["ai"] = {"skipped": powod}
+            else:
+                print(f"[dim][~] Asking AI...[/dim]")
+                data["ai"] = assess_risk(data)
 
             if ENRICHMENT_ENABLED:
                 print(f"[dim][~] Sprawdzam IOC w ThreatFox/URLhaus/MalwareBazaar...[/dim]")
