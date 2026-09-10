@@ -124,7 +124,34 @@ def _odkompresowana_zawartosc(apk_path: str) -> bytes:
                 try:
                     with z.open(info) as fh:
                         dane = fh.read(min(_MAX_WPIS_BYTES, zostalo) + 1)
-                except Exception:
+                except Exception as e:
+                    # Wpis, ktorego zipfile nie potrafi rozpakowac. Android bywa
+                    # znacznie bardziej pobłażliwy i takie APK instaluje, wiec to
+                    # nie jest "plik uszkodzony" — to technika anty-analityczna,
+                    # i to skuteczna: KAZDA regula opierajaca sie na stringach
+                    # z tego wpisu cicho nie strzeli.
+                    #
+                    # Dwa potwierdzone warianty z probek w bazie:
+                    #   * metoda kompresji spoza standardu (dozwolone 0, 8, 9, 12, 14)
+                    #     — probka Venom, AndroidManifest.xml z metoda 17180 w katalogu
+                    #     centralnym i 32040 w naglowku lokalnym (NotImplementedError),
+                    #   * ustawiony bit 0 flag ogolnych, czyli "wpis zaszyfrowany"
+                    #     — klaster tiktok18/MetaMask, gdzie w jednej probce oznaczono
+                    #     tak classes.dex i AndroidManifest.xml, a w drugiej WSZYSTKIE
+                    #     wpisy, przez co bufor zawartosci byl calkowicie pusty
+                    #     (RuntimeError "File is encrypted").
+                    # Szczegoly w yara_rules/venom_tools.yar i metamask_loader.yar.
+                    #
+                    # Lapiemy szeroko (Exception), bo lista trikow nie jest zamknieta,
+                    # a kazdy z nich objawia sie tak samo: cisza nie do odroznienia od
+                    # braku dopasowania. Samych bajtow nie doklejamy — przebieg po
+                    # surowym pliku i tak je widzi, wiec zysku by nie bylo, a szum
+                    # moglby dac falszywki.
+                    print("[yara_scanner] UWAGA: %s nie do rozpakowania (%s, metoda %d,"
+                          " flagi 0x%04x) — pominiety w przebiegu po zawartosci, reguly"
+                          " oparte na jego stringach NIE zadzialaja na tej probce"
+                          % (info.filename, type(e).__name__, info.compress_type,
+                             info.flag_bits))
                     continue
                 if len(dane) > zostalo:
                     break

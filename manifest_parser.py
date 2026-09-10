@@ -114,12 +114,101 @@ def _parse_intent_filters(apk: APK) -> dict:
     return {"autostart": sorted(set(autostart)), "suspicious_actions": sorted(set(suspicious))}
 
 
+def _atrybut(root, nazwa: str) -> str:
+    """Czyta atrybut korzenia manifestu, z przestrzenia nazw androida i bez niej.
+
+    "split" i "package" sa w AndroidManifest.xml atrybutami bez prefiksu, ale
+    "isFeatureSplit" juz z prefiksem. Zamiast pamietac, ktory jest ktory,
+    sprawdzamy obie formy.
+    """
+    if root is None:
+        return ""
+    return (root.get(nazwa) or root.get(f"{_ANDROID_NS}{nazwa}") or "").strip()
+
+
+def wykryj_split(root) -> dict | None:
+    """Rozpoznaje, czy manifest opisuje SPLIT z App Bundle, czy pelne APK.
+
+    Po co: instalacja z AAB sklada sie z base.apk plus zestawu splitow
+    (config.arm64_v8a, config.xxhdpi, config.pl...). Split konfiguracyjny NIE
+    JEST aplikacja — nie ma etykiety, uprawnien, minSdk ani zwykle kodu, bo to
+    kontener na biblioteki natywne albo zasoby dla jednej ABI/gestosci/jezyka.
+    Wrzucony do pipeline'u jako samodzielna probka wyglada jak aplikacja, ktora
+    "nie prosi o zadne uprawnienia", i dokladnie tak byl opisywany: model
+    dostawal pusty zestaw faktow i zwracal RISK: low z uzasadnieniem "brak
+    uprawnien". To nie jest ocena, tylko artefakt.
+
+    Rozpoznanie jest jednoznaczne i nie wymaga heurystyk: korzen <manifest>
+    splitu ma atrybut split="...", ktorego pelne APK nie ma w ogole.
+    Zmierzone na probkach z bazy:
+      ch.publisheria.bring          split="config.arm64_v8a"  splitTypes="base__abi"
+      com.hankuper.promoter.market  split="config.tr" / "config.ja" / "config.pt"
+      com.anbui.cqcm.app            split="config.arm64_v8a"
+      xyz.nextalone.nagram (pelne)  brak atrybutu split
+      ghy.gss.rentaapps    (pelne)  brak atrybutu split
+
+    Zwraca None dla pelnego APK (i dla base.apk, ktory tez nie ma tego
+    atrybutu), albo opis splitu.
+    """
+    nazwa = _atrybut(root, "split")
+    if not nazwa:
+        return None
+
+    feature = _atrybut(root, "isFeatureSplit").lower() in ("true", "1")
+    if feature:
+        rodzaj = "feature"
+    elif nazwa.startswith("config."):
+        rodzaj = "config"
+    else:
+        rodzaj = "nieznany"
+
+    return {
+        "nazwa": nazwa,
+        "rodzaj": rodzaj,
+        "typy": _atrybut(root, "splitTypes"),
+        # Wypelniane przez wywolujacego, ktory widzi liste plikow.
+        "ma_dex": None,
+    }
+
+
+def split_bez_kodu(data: dict) -> bool:
+    """Czy to split z AAB, ktory nie niesie wlasnego kodu.
+
+    Dla takiej probki nie ma czego oceniac: nie ma uprawnien, komponentow ani
+    DEX-a, wiec kazda "ocena ryzyka" opisuje pusty zestaw faktow, a nie probke.
+    Split typu "feature" jest wyjatkiem — ma wlasny kod i przechodzi normalna
+    sciezke analizy.
+    """
+    split = data.get("split")
+    if not split:
+        return False
+    if split.get("rodzaj") == "feature":
+        return False
+    ma_dex = split.get("ma_dex")
+    if ma_dex is None:
+        # Fallback apktool nie widzi listy plikow. Opieramy sie wtedy na
+        # konwencji nazewniczej, ktora dla splitow konfiguracyjnych jest
+        # ustalona przez samo narzedzie budujace bundle.
+        return split.get("rodzaj") == "config"
+    return not ma_dex
+
+
 def _parse_apk_obj(apk: APK) -> dict:
     intent_filters = _parse_intent_filters(apk)
     declared_perms = _safe(apk.get_declared_permissions, [])
     providers = _safe(apk.get_providers, [])
 
+    split = wykryj_split(_safe(apk.get_android_manifest_xml))
+    if split is not None:
+        # O tym, czy split niesie kod, rozstrzyga obecnosc DEX-a, a nie nazwa.
+        # Split typu "feature" kod ma i zasluguje na pelna analize; splity
+        # konfiguracyjne go nie maja. Sprawdzenie faktu jest pewniejsze niz
+        # wnioskowanie z prefiksu "config.", ktory jest tylko konwencja.
+        pliki = _safe(apk.get_files, []) or []
+        split["ma_dex"] = any(str(n).lower().endswith(".dex") for n in pliki)
+
     return {
+        "split": split,
         "package": _safe(apk.get_package),
         "app_name": _safe(apk.get_app_name),
         "version_name": _safe(apk.get_androidversion_name),
@@ -196,6 +285,12 @@ def _parse_manifest_xml(manifest_path: str) -> dict:
     tree = ET.parse(manifest_path)
     root = tree.getroot()
 
+    split = wykryj_split(root)
+    if split is not None:
+        # Tu nie widzimy listy plikow (apktool rozpakowal tylko manifest),
+        # wiec zostawiamy None zamiast zgadywac.
+        split["ma_dex"] = None
+
     def _name(el):
         return el.get(f"{_ANDROID_NS}name")
 
@@ -219,6 +314,7 @@ def _parse_manifest_xml(manifest_path: str) -> dict:
     declared = [_name(e) for e in root.findall("permission") if _name(e)]
 
     return {
+        "split": split,
         "package": root.get("package"),
         "app_name": None,  # apktool nie rozwiązuje etykiety z zasobów w trybie -s
         "version_name": root.get(f"{_ANDROID_NS}versionName"),
