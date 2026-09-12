@@ -1,10 +1,21 @@
 /*
     Dropper podszywajacy sie pod "TikTok18", ladujacy falszywy portfel MetaMask.
 
-    PODSTAWA DOWODOWA: TRZY PROBKI, wszystkie z 2026-09-10.
-      b00c61bf  com.pc3f42aa3f.tiktok18  "TikTok18."  19/76  cert 55367F1C (2026-01-17)
-      66c10f24  com.pc3a8529b9.tiktok18  "TikTok18."  17/76  cert 89E6B2DD (2026-01-18)
-      e56cd724  com.pe08678163.tiktok18  "TikTok18+"  14/75  cert 92D4FB13 (2026-01-09)
+    PODSTAWA DOWODOWA: OSIEM PROBEK (3 z 2026-09-10, 4 z 2026-09-11, 1 wczesniej).
+    Kazda ma INNY klucz podpisujacy, wiec osiem kluczy na osiem probek.
+      b00c61bf  com.pc3f42aa3f.tiktok18  "TikTok18."  19/76  CN=main_app
+      66c10f24  com.pc3a8529b9.tiktok18  "TikTok18."  17/76  CN=main_app
+      e56cd724  com.pe08678163.tiktok18  "TikTok18+"  14/75  CN=main_app
+      9d2ac3af  com.pca5dfe934.tiktok18  "TikTok18"   12/76  CN=App
+      bde48eeb  com.pcdddf9a2d.tiktok18  "TikTok18"   15/76  CN=App
+      70f49128  com.p8e4aa0f84.tiktok18  "TikTok18"   14/76  CN=App
+      969a8667  com.pb27556682.tiktok18  "TikTok18"   14/74  CN=App
+      b634c8c0  com.build.goog           —           10/75  CN=dog, BEZ payloadu
+
+    Ostatnia pozycja jest tu wazna: ten sam builder, ale bez
+    libmetamask_loader.so. Regula na certyfikat lapie ja mimo braku payloadu,
+    a regula na payload lapie build podpisany kluczem spoza tego zestawu —
+    dlatego sa OSOBNE i zadna nie jest nadzbiorem drugiej.
 
     UWAGA O ETYKIECIE — dlaczego "TikTok18" NIE jest tu kotwica:
     w bazie sa co najmniej cztery ROZNE klastry uzywajace tej samej przynety,
@@ -48,26 +59,36 @@
 rule MetaMask_Loader_Builder_Cert
 {
     meta:
-        description = "Dropper falszywego MetaMaska pod przyneta TikTok18 — podmiot certyfikatu z niewypelniona domyslka narzedzia (L=City, ST=State)"
-        family = "MetaMask loader (main_app)"
-        cert_subject = "CN=main_app, O=Org, L=City, ST=State, C=RS"
-        uwaga = "podmiot identyfikuje BUILDER, nie operatora — klucz jest generowany per build (3 rozne w 3 probkach)"
-        samples_seen = 3
-        distinct_certs = 3
-        vt_range = "14-19 / 76"
+        description = "Builder dropperow z niewypelniona domyslka narzedzia w podmiocie certyfikatu (O=Org, L=City, ST=State) — przynety TikTok18 i inne"
+        family = "MetaMask loader / builder RS"
+        cert_subject = "CN=<zmienne>, O=Org, L=City, ST=State, C=RS"
+        uwaga = "podmiot identyfikuje BUILDER, nie operatora — klucz jest generowany per build (8 roznych kluczy w 8 probkach)"
+        samples_seen = 8
+        distinct_certs = 8
+        vt_range = "10-19 / 76"
         first_seen = "2026-09"
     strings:
         // Kotwice obejmuja OID atrybutu i naglowek lancucha, nie sam napis —
         // dzieki temu trafiaja wylacznie w strukture Name w DER.
-        // 06 03 55 04 03 = OID 2.5.4.3 (commonName), 0c 08 = UTF8String(8)
-        $cn = { 06 03 55 04 03 0c 08 6d 61 69 6e 5f 61 70 70 }
         // 06 03 55 04 0a = OID 2.5.4.10 (organizationName), 13 03 = PrintableString(3)
         $o = { 06 03 55 04 0a 13 03 4f 72 67 }
         // 06 03 55 04 07 = OID 2.5.4.7 (localityName), 13 04 = PrintableString(4)
         $l = { 06 03 55 04 07 13 04 43 69 74 79 }
+        // 06 03 55 04 08 = OID 2.5.4.8 (stateOrProvinceName), 13 05 = PrintableString(5)
+        $st = { 06 03 55 04 08 13 05 53 74 61 74 65 }
     condition:
-        // Wszystkie trzy naraz. Samo "Org" albo samo "City" jest zbyt pospolite,
-        // dopiero komplet niewypelnionych domyslek jest sygnalem.
+        // CN-a tu NIE MA i to jest poprawka po pomiarze, nie uproszczenie.
+        // Pierwsza wersja reguly wymagala CN=main_app i przez to przepuscila
+        // 5 z 8 probek klastra: w bazie sa TRZY warianty CN przy identycznej
+        // reszcie podmiotu — "main_app" (3 probki), "App" (4), "dog" (1).
+        // Zmienna czescia jest wiec CN, a stala komplet trzech niewypelnionych
+        // domyslek narzedzia. Zmierzone na wszystkich osmiu probkach: bajty
+        // $o, $l i $st sa w kazdej identyczne.
+        //
+        // Trzy naraz, bo kazdy z osobna jest zbyt pospolity — dopiero zestaw
+        // "Org" + "City" + "State" w polach, ktore czlowiek wypelnilby
+        // sensownie, jest sygnalem. W bazie 8 na 8 takich probek ma VT 10-19;
+        // zadna nie jest czysta.
         all of them
 }
 
