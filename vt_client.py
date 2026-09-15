@@ -1,3 +1,4 @@
+"""VirusTotal v3 lookups, with upload as a fallback for unseen samples."""
 import time
 
 import requests
@@ -24,6 +25,7 @@ def _parse_stats(data: dict) -> dict:
 
 
 def check_sha256(sha256: str) -> dict:
+    """Look a hash up. Returns {"not_found": True} if VT has never seen it."""
     headers = {"x-apikey": VT_API_KEY}
     try:
         resp = requests.get(f"{_BASE}/files/{sha256}", headers=headers, timeout=15)
@@ -39,7 +41,11 @@ def check_sha256(sha256: str) -> dict:
 
 
 def upload_file(apk_path: str, sha256: str) -> dict:
-    """Upload APK to VT and poll for analysis results. Only called when hash not found."""
+    """Upload the APK and poll until VT finishes. Only used when the hash is unknown.
+
+    Uploading publishes the sample to VT, so this is deliberately not the
+    default path — check_sha256 runs first.
+    """
     headers = {"x-apikey": VT_API_KEY}
     filename = apk_path.replace("\\", "/").split("/")[-1]
 
@@ -61,7 +67,7 @@ def upload_file(apk_path: str, sha256: str) -> dict:
     if not analysis_id:
         return {"error": "No analysis ID returned from VT upload"}
 
-    # Poll for results — VT typically finishes in 30–90 seconds
+    # VT usually finishes in 30-90s; 12 rounds of 15s gives it three minutes.
     for _ in range(12):
         time.sleep(15)
         try:

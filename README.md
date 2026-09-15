@@ -17,11 +17,12 @@ For each new APK sample:
 9. **YARA scan** — custom rules for campaigns identified in previous runs (fake MetaMask/Ermac/Octo, RU bankers, USDT clippers, etc.), see `yara_rules/`
 10. **IOC extraction** — crypto wallets (BTC/ETH/TRON), operator contacts (Telegram/WhatsApp), Discord exfil webhooks, dead-drop C2 resolvers (GitHub, Firebase RTDB, Cloudflare Pages)
 11. **External enrichment** — checks sample hash and extracted IOCs against abuse.ch (MalwareBazaar, ThreatFox, URLhaus) to see if they're already publicly known
-12. **Deduplication** — skips full re-analysis (VT/MobSF/AI/apktool) for samples already seen under a different filename
-13. **Threat-intel database** — every sample and IOC is stored in `output/threat_intel.db` (SQLite), with correlation across runs (shared signing certificate, reused IOC)
-14. **Exports** — CSV, MISP-compatible event JSON, and ready-to-send abuse report text per run
-15. **Sends email report** — HTML body summary + CSV attachment with 35+ fields per sample
-16. **Deletes downloaded files** — even on error
+12. **App Bundle split detection** — a `config.*` split is not an application (no label, no permissions, usually no code), so it is flagged as such and skipped for AI rating instead of being described as an app that "requests no permissions"
+13. **Deduplication** — skips full re-analysis (VT/MobSF/AI/apktool) for samples already seen under a different filename
+14. **Threat-intel database** — every sample and IOC is stored in `output/threat_intel.db` (SQLite), with correlation across runs (shared signing certificate, reused IOC)
+15. **Exports** — CSV, MISP-compatible event JSON, and ready-to-send abuse report text per run
+16. **Sends email report** — HTML body summary + CSV attachment with 35+ fields per sample
+17. **Deletes downloaded files** — even on error
 
 ## Example output
 
@@ -139,8 +140,8 @@ Opens at http://localhost:5001 — overview stats, recent samples, most-reused I
 ├── analyzer.py          # Main entry point
 ├── mwdb_client.py       # MWDB API client
 ├── downloader.py        # APK download
-├── manifest_parser.py   # AndroidManifest.xml parser + intent filters
-├── cert_analyzer.py     # Certificate analysis
+├── manifest_parser.py   # AndroidManifest.xml parser, intent filters, split detection
+├── cert_analyzer.py     # Certificate analysis (v1/v2/v3 signature schemes)
 ├── dex_analyzer.py      # DEX analysis (URLs, APIs, entropy, malware frameworks, hidden DEX)
 ├── vt_client.py         # VirusTotal lookup + file upload fallback
 ├── mobsf_client.py      # MobSF static/dynamic analysis (optional)
@@ -153,11 +154,43 @@ Opens at http://localhost:5001 — overview stats, recent samples, most-reused I
 ├── report_export.py     # CSV / MISP event JSON / abuse report exports
 ├── dashboard.py         # Flask web UI over threat_intel.db
 ├── mailer.py            # Email report with CSV
+├── isolation.py         # Runs parsers for untrusted files in a child process
 ├── state.py             # Last run timestamp
 ├── config.py            # Config loader (.env)
+├── clean_iocs.py        # One-off: purge IOCs stored before the validators existed
+├── backfill_certs.py    # One-off: backfill certificates for pre-v2/v3 rows
+├── backfill_splits.py   # One-off: mark App Bundle splits among older rows
+├── extract_anchors.py   # One-off: derive YARA anchors from a campaign certificate
 ├── .env.example         # Example credentials
 └── requirements.txt
 ```
+
+The three `backfill_*` / `clean_*` scripts all run in preview mode by default,
+take a database backup before writing, and are resumable — they only pick rows
+that have not been processed yet, so an interrupted run can simply be repeated.
+
+## Writing YARA rules
+
+The rules in `yara_rules/` follow a few conventions that are worth knowing
+before adding one:
+
+- **Measure the anchor before shipping it.** Every candidate string is checked
+  against `output/threat_intel.db` and against real samples first. Several
+  obvious-looking anchors were rejected this way — `telegram.org` and
+  `static-maps.yandex.ru` turned out to be artefacts of the Telegram client
+  source and appear in clean apps.
+- **The scanner makes two separate passes.** `rules.match(path)` sees the raw
+  file (the v2/v3 signature block, ZIP entry names) and `rules.match(data=...)`
+  sees the concatenated decompressed entries (DEX, manifest, resources). A
+  single rule cannot mix a string from one pass with a string from the other —
+  that branch will never fire, and it will fail silently.
+- **Separate the tool from the operator.** A certificate subject that is a
+  builder default (`O=Org, L=City, ST=State`) identifies the tool, not the
+  person; an RSA modulus identifies one key pair. Those belong in different
+  rules, and a shared public key (the AOSP test keys) belongs in neither.
+- **Say what is not there.** Each rule file's header records which anchors were
+  considered and rejected, and why. That is what stops the same rejected idea
+  from being tried again six weeks later.
 
 ## Security notes
 

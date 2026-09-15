@@ -1,12 +1,12 @@
-"""Uruchamianie parserow niezaufanych plikow w osobnym procesie.
+"""Run parsers for untrusted files in a separate process.
 
-APK jest wrogim wejsciem. Spreparowany DEX albo AXML potrafi zawiesic parser
-androguarda w nieskonczonosc (technika anty-analizy) lub wyczerpac pamiec.
-Wywolanie w osobnym procesie z twardym limitem czasu sprawia, ze najgorszym
-przypadkiem jest utrata jednej probki, a nie zawieszenie calego runu.
+An APK is hostile input. A crafted DEX or AXML can hang androguard's parser
+forever (a deliberate anti-analysis trick) or eat all available memory. Calling
+into it from a child process with a hard timeout means the worst case is losing
+one sample, not wedging the whole run.
 
-Kontekst "spawn" jest uzywany swiadomie: fork nie istnieje na Windowsie, a
-czysty start procesu potomnego nie dziedziczy stanu androguarda z rodzica.
+The "spawn" context is deliberate: fork does not exist on Windows, and a clean
+child start means androguard's global state is not inherited from the parent.
 """
 import multiprocessing as mp
 import queue as _queue
@@ -14,11 +14,11 @@ import traceback
 
 
 class IsolationTimeout(Exception):
-    """Proces roboczy przekroczyl limit czasu i zostal ubity."""
+    """The worker process ran past its deadline and was killed."""
 
 
 class IsolationError(Exception):
-    """Funkcja w procesie roboczym zakonczyla sie bledem."""
+    """The function raised inside the worker process."""
 
 
 def _worker(target, args, kwargs, q) -> None:
@@ -29,13 +29,13 @@ def _worker(target, args, kwargs, q) -> None:
 
 
 def run_isolated(target, args=(), kwargs=None, timeout: int = 90):
-    """Wywoluje target(*args, **kwargs) w osobnym procesie i zwraca wynik.
+    """Call target(*args, **kwargs) in a child process and return its result.
 
-    target musi byc funkcja najwyzszego poziomu w importowalnym module —
-    kontekst spawn przekazuje ja przez pickle po referencji.
+    target has to be a module-level function in an importable module — the
+    spawn context pickles it by reference, not by value.
 
-    Podnosi IsolationTimeout po przekroczeniu limitu (proces jest wtedy
-    ubijany) albo IsolationError, gdy funkcja rzucila wyjatkiem.
+    Raises IsolationTimeout if the deadline passes (the process is killed) or
+    IsolationError if the function itself raised.
     """
     ctx = mp.get_context("spawn")
     q = ctx.Queue()
@@ -46,17 +46,17 @@ def run_isolated(target, args=(), kwargs=None, timeout: int = 90):
     if p.is_alive():
         p.terminate()
         p.join(5)
-        if p.is_alive():  # terminate bywa ignorowane przy zapetleniu w kodzie natywnym
+        if p.is_alive():  # terminate can be ignored when native code is spinning
             p.kill()
             p.join()
-        raise IsolationTimeout(f"przekroczono limit {timeout}s")
+        raise IsolationTimeout(f"exceeded the {timeout}s limit")
 
-    # Uwaga: q.empty() bywa chwilowo True mimo zapisanego wyniku — watek feedera
-    # multiprocessing.Queue moze nie zdazyc oproznic bufora do potoku.
+    # Careful: q.empty() can read True even though a result was written —
+    # multiprocessing.Queue's feeder thread may not have flushed to the pipe yet.
     try:
         status, payload = q.get(timeout=10)
     except _queue.Empty:
-        raise IsolationError("proces roboczy zakonczyl sie bez wyniku")
+        raise IsolationError("worker process exited without producing a result")
 
     if status == "err":
         raise IsolationError(payload)

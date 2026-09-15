@@ -1,65 +1,65 @@
 /*
-    Banker/RAT podszywajacy sie pod brazylijskie marki, z rodzina komponentow
-    nazwanych wedlug szablonu "proxy.adapter.op<Typ><slowo>".
+    Banker/RAT impersonating Brazilian brands, with a family of components
+    named after the template "proxy.adapter.op<Type><word>".
 
-    PODSTAWA DOWODOWA: JEDNA PROBKA. Tak samo malo jak przy venom_tools.yar
-    i z tymi samymi konsekwencjami dla ostroznosci — przy n=1 nie da sie
-    odroznic odcisku buildera od artefaktu pojedynczego builda.
+    EVIDENCE BASE: ONE SAMPLE. As thin as venom_tools.yar was, and with the
+    same consequences for caution - at n=1 you cannot tell a builder
+    fingerprint from an artefact of one particular build.
       157d96e7  emulator.differentiator.pinger  "Bradesco Saude"  21/75  2026-09-10
-      klucz testowy AOSP 61ED377E (publiczny, wiec bezuzyteczny jako kotwica)
+      AOSP test key 61ED377E (public, therefore useless as an anchor)
 
-    CO ZMIERZONO: 25 klas w classes.dex w pakiecie "proxy/adapter/", nazwanych
-    wedlug jednego szablonu — przedrostek "op", typ komponentu androidowego
-    i zwykle angielskie slowo:
+    WHAT WAS MEASURED: 25 classes in classes.dex under the "proxy/adapter/"
+    package, all named to one template - the prefix "op", an Android component
+    type and an ordinary English word:
       opActivity{cataloger,converter,coremesh,expander,parser,pulsehub,
                  scheduler,transmitter,watcher}
       opReceiver{archiver,authorizer,conductor,emulator,parser,recycler,
                  repeater,shuffler}
       opService{conductor,enforcer,manager,parser,poller,responder,scanner,
                 watchdog}
-    17 z nich jest zadeklarowanych w manifescie jako uslugi i odbiorcy.
-    Obok nich stoja komponenty o nazwach czysto losowych (isastmopirhmuy,
-    oiftagxtkpymrvc) — czyli randomizacja W TEJ SAMEJ PROBCE dziala tylko na
-    czesc nazw, a szablon "proxy.adapter.op*" zostal nietkniety. To sugeruje,
-    ze pochodzi z warstwy buildera, a nie z generatora nazw. Sugeruje — przy
-    jednej probce nie jest to rozstrzygniete.
+    17 of them are declared in the manifest as services and receivers.
+    Alongside sit components with purely random names (isastmopirhmuy,
+    oiftagxtkpymrvc) - so randomisation WITHIN THE SAME SAMPLE only touches
+    some of the names and left the "proxy.adapter.op*" template alone. That
+    suggests it comes from the builder layer rather than the name generator.
+    Suggests - with one sample it is not settled.
 
-    CZEGO SWIADOMIE NIE UZYWAM JAKO KOTWICY:
-      * klucza — to publiczny klucz testowy AOSP, wspoldzielony przez modderow
-        i autorow malware (patrz threat_db._CERT_SUBJECT_NIEIDENTYFIKUJACE),
-      * "jcraft.com" / "openssh.com" (biblioteka SSH JSch w srodku bankera,
-        czyli tunel zwrotny) — zmierzone w bazie: te domeny wystepuja w OSMIU
-        probkach, w tym w legalnych "Servers Ultimate", "SeekVPN", "FanVPN"
-        i "AIO Streamer". Jako dyskryminator sa bezwartosciowe, mimo ze
-        w kontekscie tej probki sa ciekawe,
-      * etykiety "Bradesco Saude" — marka jest podszywana szeroko i przez
-        niepowiazanych operatorow.
+    WHAT IS DELIBERATELY NOT USED AS AN ANCHOR:
+      * the key - it is the public AOSP test key, shared by modders and malware
+        authors alike (see threat_db._NON_IDENTIFYING_CERT_SUBJECTS),
+      * "jcraft.com" / "openssh.com" (the JSch SSH library inside a banker,
+        i.e. a reverse tunnel) - measured in the database: those domains appear
+        in EIGHT samples, among them the legitimate "Servers Ultimate",
+        "SeekVPN", "FanVPN" and "AIO Streamer". As a discriminator they are
+        worthless, however interesting they are in this sample's context,
+      * the "Bradesco Saude" label - the brand is impersonated widely and by
+        unrelated operators.
 
-    PRZEBIEG SKANERA: deskryptory klas siedza w zdeflatowanym classes.dex,
-    wiec regula dziala WYLACZNIE w przebiegu po odkompresowanej zawartosci.
-    W przebiegu po surowym pliku tych ciagow nie ma — sprawdzone, takze
-    w formie UTF-16 z manifestu.
+    SCANNER PASS: class descriptors live inside the deflated classes.dex, so
+    this rule only works in the decompressed-content pass. The raw-file pass
+    does not contain these strings - checked, including in the UTF-16 form
+    from the manifest.
 */
 
-rule Proxy_Adapter_Komponenty
+rule Proxy_Adapter_Components
 {
     meta:
-        description = "Rodzina komponentow 'proxy.adapter.op<Typ><slowo>' — szablon nazw buildera bankera podszywajacego sie pod marki brazylijskie"
+        description = "Component family 'proxy.adapter.op<Type><word>' - builder naming template of a banker impersonating Brazilian brands"
         family = "proxy.adapter"
-        uwaga = "podstawa dowodowa: 1 probka. Drugie trafienie rozstrzygnie, czy to odcisk buildera, czy jednego builda."
+        note = "evidence base: 1 sample. A second hit will settle whether this fingerprints the builder or one build."
         samples_seen = 1
         vt = "21 / 75"
         first_seen = "2026-09"
     strings:
-        // Deskryptor typu DEX. Slowa koncowego NIE zaszywamy — jest ich 25
-        // roznych i moga byc losowane z puli; stalym elementem jest szablon
-        // "Lproxy/adapter/op" plus nazwa typu komponentu androidowego.
+        // DEX type descriptor. The trailing word is NOT pinned - there are 25
+        // distinct ones and they may be drawn from a pool; what stays fixed is
+        // the "Lproxy/adapter/op" template plus an Android component type.
         $svc = /Lproxy\/adapter\/opService[a-z]{4,14};/ ascii
         $rcv = /Lproxy\/adapter\/opReceiver[a-z]{4,14};/ ascii
         $act = /Lproxy\/adapter\/opActivity[a-z]{4,14};/ ascii
     condition:
-        // Wszystkie trzy typy naraz i lacznie kilkanascie klas. Pojedyncze
-        // trafienie moglaby dac przypadkowa aplikacja z pakietem "proxy.adapter";
-        // komplet trzech typow po kilka sztuk kazdy juz nie.
+        // All three types at once, and a dozen-plus classes in total. A single
+        // hit could come from some unrelated app with a "proxy.adapter"
+        // package; a full set of three types with several each could not.
         all of them and (#svc + #rcv + #act) >= 12
 }
