@@ -1,22 +1,31 @@
+"""AndroidManifest parsing, with fallbacks for samples that fight back.
+
+Three paths, in order of preference: androguard on the file, androguard on raw
+bytes, and apktool as a last resort. Malware routinely ships manifests that are
+valid enough for Android and hostile enough to stall a parser, so every entry
+point here is either isolated, time-boxed, or both.
+"""
 import json
 import os
 import shutil
 import subprocess
 import tempfile
-# defusedxml zamiast xml.etree: to drugie jest wg dokumentacji Pythona
-# podatne na billion laughs i quadratic blowup, a parsujemy tu manifest
-# odkodowany ze zlosliwej probki.
-import defusedxml.ElementTree as ET
 import zipfile
 
+# defusedxml rather than xml.etree: the standard parser is documented as
+# vulnerable to billion laughs and quadratic blowup, and what we feed it is a
+# manifest decoded out of a malicious sample.
+import defusedxml.ElementTree as ET
+
 from loguru import logger
-# Wyciszamy tu, a nie tylko w analyzer.py: ten modul biegnie takze w
-# procesach potomnych run_isolated, ktore nie importuja analyzer.py.
+
+# Muted here and not only in analyzer.py: this module also runs inside the
+# run_isolated child processes, which never import analyzer.py.
 logger.disable("androguard")
 
-from androguard.core.apk import APK
-from cert_analyzer import analyze_cert
-from isolation import run_isolated, IsolationTimeout, IsolationError
+from androguard.core.apk import APK  # noqa: E402
+from cert_analyzer import analyze_cert  # noqa: E402
+from isolation import run_isolated, IsolationTimeout, IsolationError  # noqa: E402
 
 _APKTOOL_JAR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools", "apktool.jar")
 _ANDROID_NS = "{http://schemas.android.com/apk/res/android}"
@@ -24,6 +33,7 @@ _MAX_INNER_APK_BYTES = 512 * 1024 * 1024
 
 
 def _read_apk_bytes_from_xapk(xapk_path: str) -> bytes:
+    """Pull the main APK out of an XAPK bundle."""
     with zipfile.ZipFile(xapk_path, "r") as z:
         names = z.namelist()
 
@@ -45,18 +55,23 @@ def _read_apk_bytes_from_xapk(xapk_path: str) -> bytes:
             if preferred:
                 apk_candidates = preferred
 
-        # XAPK to niezaufany ZIP — wpis moze rozpakowac sie do gigabajtow.
+        # An XAPK is an untrusted ZIP: one entry can expand into gigabytes.
         info = z.getinfo(apk_candidates[0])
         if info.file_size > _MAX_INNER_APK_BYTES:
-            raise ValueError(f"APK w XAPK ma {info.file_size} B — powyzej limitu")
+            raise ValueError(f"APK inside XAPK is {info.file_size} B, over the limit")
         with z.open(info) as f:
             data = f.read(_MAX_INNER_APK_BYTES + 1)
         if len(data) > _MAX_INNER_APK_BYTES:
-            raise ValueError("APK w XAPK przekroczyl limit przy odczycie")
+            raise ValueError("APK inside XAPK ran past the limit while reading")
         return data
 
 
 def _safe(fn, default=None):
+    """Call fn() and fall back to default on any failure.
+
+    androguard raises a wide and undocumented range of exceptions on damaged
+    input, and one missing manifest field should not cost us the whole sample.
+    """
     try:
         return fn()
     except (KeyError, Exception):
@@ -83,22 +98,24 @@ _SUSPICIOUS_ACTIONS = {
 
 
 def _parse_intent_filters(apk: APK) -> dict:
+    """Collect autostart and otherwise interesting broadcast actions."""
     autostart = []
     suspicious = []
     try:
-        for activity_or_receiver in list(_safe(apk.get_receivers, [])) + list(_safe(apk.get_services, [])):
-            filters = _safe(lambda: apk.get_intent_filters("receiver", activity_or_receiver), {})
+        for component in list(_safe(apk.get_receivers, [])) + list(_safe(apk.get_services, [])):
+            filters = _safe(lambda: apk.get_intent_filters("receiver", component), {})
             if not filters:
                 continue
-            for actions in filters.get("action", []):
-                if actions in _AUTOSTART_ACTIONS:
-                    autostart.append(actions)
-                if actions in _SUSPICIOUS_ACTIONS:
-                    suspicious.append(actions)
+            for action in filters.get("action", []):
+                if action in _AUTOSTART_ACTIONS:
+                    autostart.append(action)
+                if action in _SUSPICIOUS_ACTIONS:
+                    suspicious.append(action)
     except Exception:
         pass
 
-    # Also scan raw manifest XML for actions
+    # Second pass over the raw manifest XML: the intent-filter API misses
+    # actions on components androguard failed to enumerate.
     try:
         manifest_xml = apk.get_android_manifest_xml()
         xml_str = str(manifest_xml) if manifest_xml is not None else ""
@@ -114,98 +131,100 @@ def _parse_intent_filters(apk: APK) -> dict:
     return {"autostart": sorted(set(autostart)), "suspicious_actions": sorted(set(suspicious))}
 
 
-def _atrybut(root, nazwa: str) -> str:
-    """Czyta atrybut korzenia manifestu, z przestrzenia nazw androida i bez niej.
+def _manifest_attr(root, name: str) -> str:
+    """Read a root-element attribute, with and without the android namespace.
 
-    "split" i "package" sa w AndroidManifest.xml atrybutami bez prefiksu, ale
-    "isFeatureSplit" juz z prefiksem. Zamiast pamietac, ktory jest ktory,
-    sprawdzamy obie formy.
+    In AndroidManifest.xml "split" and "package" carry no prefix, but
+    "isFeatureSplit" does. Rather than remember which is which, try both.
     """
     if root is None:
         return ""
-    return (root.get(nazwa) or root.get(f"{_ANDROID_NS}{nazwa}") or "").strip()
+    return (root.get(name) or root.get(f"{_ANDROID_NS}{name}") or "").strip()
 
 
-def wykryj_split(root) -> dict | None:
-    """Rozpoznaje, czy manifest opisuje SPLIT z App Bundle, czy pelne APK.
+def detect_split(root) -> dict | None:
+    """Tell an App Bundle split apart from a full APK.
 
-    Po co: instalacja z AAB sklada sie z base.apk plus zestawu splitow
-    (config.arm64_v8a, config.xxhdpi, config.pl...). Split konfiguracyjny NIE
-    JEST aplikacja — nie ma etykiety, uprawnien, minSdk ani zwykle kodu, bo to
-    kontener na biblioteki natywne albo zasoby dla jednej ABI/gestosci/jezyka.
-    Wrzucony do pipeline'u jako samodzielna probka wyglada jak aplikacja, ktora
-    "nie prosi o zadne uprawnienia", i dokladnie tak byl opisywany: model
-    dostawal pusty zestaw faktow i zwracal RISK: low z uzasadnieniem "brak
-    uprawnien". To nie jest ocena, tylko artefakt.
+    Why this matters: an AAB install is base.apk plus a set of splits
+    (config.arm64_v8a, config.xxhdpi, config.pl...). A config split is NOT an
+    application - no label, no permissions, no minSdk and usually no code,
+    because it is a container for native libraries or resources for a single
+    ABI, density or language. Dropped into the pipeline as a standalone sample
+    it looks like an app that "requests no permissions", and that is exactly
+    how it used to get described: the model received an empty set of facts and
+    answered RISK: low, reasoning "no permissions". That is an artefact of the
+    empty prompt, not an assessment of anything.
 
-    Rozpoznanie jest jednoznaczne i nie wymaga heurystyk: korzen <manifest>
-    splitu ma atrybut split="...", ktorego pelne APK nie ma w ogole.
-    Zmierzone na probkach z bazy:
-      ch.publisheria.bring          split="config.arm64_v8a"  splitTypes="base__abi"
-      com.hankuper.promoter.market  split="config.tr" / "config.ja" / "config.pt"
-      com.anbui.cqcm.app            split="config.arm64_v8a"
-      xyz.nextalone.nagram (pelne)  brak atrybutu split
-      ghy.gss.rentaapps    (pelne)  brak atrybutu split
+    Detection needs no heuristics. A split's <manifest> root carries a
+    split="..." attribute that a full APK does not have at all. Measured
+    against samples in the database:
 
-    Zwraca None dla pelnego APK (i dla base.apk, ktory tez nie ma tego
-    atrybutu), albo opis splitu.
+        ch.publisheria.bring          split="config.arm64_v8a"  splitTypes="base__abi"
+        com.hankuper.promoter.market  split="config.tr" / "config.ja" / "config.pt"
+        com.anbui.cqcm.app            split="config.arm64_v8a"
+        xyz.nextalone.nagram (full)   no split attribute
+        ghy.gss.rentaapps    (full)   no split attribute
+
+    Returns None for a full APK - and for base.apk, which has no such
+    attribute either - or a description of the split.
     """
-    nazwa = _atrybut(root, "split")
-    if not nazwa:
+    name = _manifest_attr(root, "split")
+    if not name:
         return None
 
-    feature = _atrybut(root, "isFeatureSplit").lower() in ("true", "1")
-    if feature:
-        rodzaj = "feature"
-    elif nazwa.startswith("config."):
-        rodzaj = "config"
+    if _manifest_attr(root, "isFeatureSplit").lower() in ("true", "1"):
+        kind = "feature"
+    elif name.startswith("config."):
+        kind = "config"
     else:
-        rodzaj = "nieznany"
+        kind = "unknown"
 
     return {
-        "nazwa": nazwa,
-        "rodzaj": rodzaj,
-        "typy": _atrybut(root, "splitTypes"),
-        # Wypelniane przez wywolujacego, ktory widzi liste plikow.
-        "ma_dex": None,
+        "name": name,
+        "kind": kind,
+        "types": _manifest_attr(root, "splitTypes"),
+        # Filled in by the caller, who can see the file listing.
+        "has_dex": None,
     }
 
 
-def split_bez_kodu(data: dict) -> bool:
-    """Czy to split z AAB, ktory nie niesie wlasnego kodu.
+def split_has_no_code(data: dict) -> bool:
+    """Is this an App Bundle split that carries no code of its own?
 
-    Dla takiej probki nie ma czego oceniac: nie ma uprawnien, komponentow ani
-    DEX-a, wiec kazda "ocena ryzyka" opisuje pusty zestaw faktow, a nie probke.
-    Split typu "feature" jest wyjatkiem — ma wlasny kod i przechodzi normalna
-    sciezke analizy.
+    There is nothing to assess in one: no permissions, no components, no DEX,
+    so any "risk rating" describes an empty set of facts rather than a sample.
+    A "feature" split is the exception - it has its own code and goes through
+    the normal path.
     """
     split = data.get("split")
     if not split:
         return False
-    if split.get("rodzaj") == "feature":
+    if split.get("kind") == "feature":
         return False
-    ma_dex = split.get("ma_dex")
-    if ma_dex is None:
-        # Fallback apktool nie widzi listy plikow. Opieramy sie wtedy na
-        # konwencji nazewniczej, ktora dla splitow konfiguracyjnych jest
-        # ustalona przez samo narzedzie budujace bundle.
-        return split.get("rodzaj") == "config"
-    return not ma_dex
+
+    has_dex = split.get("has_dex")
+    if has_dex is None:
+        # The apktool fallback never sees the file listing. Fall back to the
+        # naming convention, which for config splits is fixed by the bundle
+        # tool itself rather than chosen by the author.
+        return split.get("kind") == "config"
+    return not has_dex
 
 
 def _parse_apk_obj(apk: APK) -> dict:
+    """Flatten a parsed APK into the dict the rest of the pipeline expects."""
     intent_filters = _parse_intent_filters(apk)
     declared_perms = _safe(apk.get_declared_permissions, [])
     providers = _safe(apk.get_providers, [])
 
-    split = wykryj_split(_safe(apk.get_android_manifest_xml))
+    split = detect_split(_safe(apk.get_android_manifest_xml))
     if split is not None:
-        # O tym, czy split niesie kod, rozstrzyga obecnosc DEX-a, a nie nazwa.
-        # Split typu "feature" kod ma i zasluguje na pelna analize; splity
-        # konfiguracyjne go nie maja. Sprawdzenie faktu jest pewniejsze niz
-        # wnioskowanie z prefiksu "config.", ktory jest tylko konwencja.
-        pliki = _safe(apk.get_files, []) or []
-        split["ma_dex"] = any(str(n).lower().endswith(".dex") for n in pliki)
+        # Whether a split carries code is settled by the presence of a DEX, not
+        # by its name. Feature splits do have code and deserve full analysis;
+        # config splits do not. Checking the fact beats inferring from the
+        # "config." prefix, which is only a convention.
+        files = _safe(apk.get_files, []) or []
+        split["has_dex"] = any(str(n).lower().endswith(".dex") for n in files)
 
     return {
         "split": split,
@@ -229,67 +248,69 @@ def _parse_apk_obj(apk: APK) -> dict:
 
 
 def _parse_raw(apk_path: str) -> APK:
-    """Fallback: wczytaj bajty i parsuj z raw=True.
+    """Fallback: read the bytes and parse with raw=True.
 
-    Omija błąd apkInspector [Errno 22] na Windows oraz radzi sobie z APK
-    o nietypowym/uszkodzonym nagłówku ZIP (np. Triada), których
-    APK(path) nie potrafi otworzyć.
+    Sidesteps the apkInspector [Errno 22] on Windows and copes with APKs whose
+    ZIP header is unusual or damaged (Triada, for one) that APK(path) refuses
+    to open at all.
     """
     with open(apk_path, "rb") as f:
         return APK(f.read(), raw=True)
 
 
 def parse_apk_bytes(apk_bytes: bytes) -> dict:
-    """Parsuje APK prosto z pamieci, bez zapisu na dysk.
+    """Parse an APK straight from memory, never touching the disk.
 
-    Zapisanie probki na dysk pod Windowsem sprawia, ze Defender ja flaguje
-    i blokuje ponowne otwarcie — Python zglasza to jako mylace
-    "[Errno 22] Invalid argument" przy open(). Analiza w pamieci omija
-    skanowanie plikowe w calosci i jest przy okazji szybsza.
+    Writing a sample to disk on Windows gets it flagged by Defender, which then
+    blocks reopening the file - Python surfaces that as a misleading
+    "[Errno 22] Invalid argument" from open(). Working in memory skips file
+    scanning entirely and is faster into the bargain.
     """
     return _parse_apk_obj(APK(apk_bytes, raw=True))
 
 
 def parse_apk_apktool(apk_path: str, timeout: int = 120) -> dict:
-    """Fallback: dekoduj manifest apktoolem gdy androguard się wiesza.
+    """Fallback: decode the manifest with apktool when androguard hangs.
 
-    apktool używa innego dekodera AXML, odpornego na część technik anty-analizy
-    (AXML bombing). Zwraca częściowe dane (bez certyfikatu — apktool nie parsuje
-    podpisu). Wymaga tools/apktool.jar oraz Javy w PATH.
+    apktool uses a different AXML decoder, one that shrugs off some
+    anti-analysis tricks (AXML bombing). Returns partial data - no certificate,
+    because apktool does not parse the signature. Needs tools/apktool.jar and
+    a java on PATH.
     """
     if not os.path.exists(_APKTOOL_JAR):
-        raise ValueError("Brak tools/apktool.jar — nie mogę użyć fallbacku")
+        raise ValueError("tools/apktool.jar is missing, cannot use the fallback")
 
     out_dir = tempfile.mkdtemp(prefix="apktool_")
     try:
-        # -s: pomiń dekompilację DEX (szybciej), -f: nadpisz, --no-res też można,
-        # ale potrzebujemy AndroidManifest.xml, więc zostawiamy zasoby.
+        # -s skips DEX decompilation, which is most of the runtime; -f
+        # overwrites. --no-res would be faster still, but the manifest needs
+        # the resource table, so resources stay.
         subprocess.run(
             ["java", "-jar", _APKTOOL_JAR, "d", "-s", "-f", "-o", out_dir, apk_path],
             capture_output=True, timeout=timeout, check=True,
         )
         manifest_path = os.path.join(out_dir, "AndroidManifest.xml")
         if not os.path.exists(manifest_path):
-            raise ValueError("apktool nie wygenerował AndroidManifest.xml")
+            raise ValueError("apktool produced no AndroidManifest.xml")
         return _parse_manifest_xml(manifest_path)
     except subprocess.TimeoutExpired:
-        raise ValueError(f"apktool timeout po {timeout}s")
+        raise ValueError(f"apktool timed out after {timeout}s")
     except subprocess.CalledProcessError as e:
-        raise ValueError(f"apktool błąd: {e.stderr.decode(errors='ignore')[:200]}")
+        raise ValueError(f"apktool failed: {e.stderr.decode(errors='ignore')[:200]}")
     finally:
         shutil.rmtree(out_dir, ignore_errors=True)
 
 
 def _parse_manifest_xml(manifest_path: str) -> dict:
-    """Wyciąga dane z odkodowanego (plaintext) AndroidManifest.xml apktoola."""
+    """Read apktool's decoded plaintext AndroidManifest.xml."""
     tree = ET.parse(manifest_path)
     root = tree.getroot()
 
-    split = wykryj_split(root)
+    split = detect_split(root)
     if split is not None:
-        # Tu nie widzimy listy plikow (apktool rozpakowal tylko manifest),
-        # wiec zostawiamy None zamiast zgadywac.
-        split["ma_dex"] = None
+        # No file listing here (apktool only unpacked the manifest), so leave
+        # this unknown rather than guess.
+        split["has_dex"] = None
 
     def _name(el):
         return el.get(f"{_ANDROID_NS}name")
@@ -316,7 +337,7 @@ def _parse_manifest_xml(manifest_path: str) -> dict:
     return {
         "split": split,
         "package": root.get("package"),
-        "app_name": None,  # apktool nie rozwiązuje etykiety z zasobów w trybie -s
+        "app_name": None,  # apktool -s does not resolve the label from resources
         "version_name": root.get(f"{_ANDROID_NS}versionName"),
         "version_code": root.get(f"{_ANDROID_NS}versionCode"),
         "min_sdk": None,
@@ -336,22 +357,23 @@ def _parse_manifest_xml(manifest_path: str) -> dict:
 
 
 def parse_apk_timeout(apk_path: str, timeout: int = 90) -> dict:
-    """Parsuj APK w osobnym procesie z twardym limitem czasu.
+    """Parse an APK in a child process under a hard deadline.
 
-    Chroni przed spreparowanym AndroidManifest.xml (AXML bombing), ktory
-    zawiesza parser androguarda w nieskonczonosc jako technika anty-analizy.
-    Po przekroczeniu limitu proces jest ubijany i probujemy fallbacku apktool.
+    Guards against a crafted AndroidManifest.xml (AXML bombing) that hangs
+    androguard's parser forever as an anti-analysis technique. Past the
+    deadline the process is killed and we try the apktool fallback.
     """
     try:
         return run_isolated(parse_apk, (apk_path,), timeout=timeout)
     except IsolationTimeout:
-        print(f"  [~] androguard timeout po {timeout}s - probuje fallback apktool...")
+        print(f"  [~] androguard timed out after {timeout}s, trying apktool fallback...")
         return parse_apk_apktool(apk_path)
     except IsolationError as e:
         raise ValueError(str(e).splitlines()[-1])
 
 
 def parse_apk(apk_path: str) -> dict:
+    """Parse an APK or XAPK from disk."""
     try:
         if apk_path.lower().endswith(".xapk"):
             data = _read_apk_bytes_from_xapk(apk_path)
@@ -360,7 +382,7 @@ def parse_apk(apk_path: str) -> dict:
             try:
                 apk = APK(apk_path)
             except Exception:
-                # Fallback dla APK, których apkInspector nie potrafi otworzyć
+                # Fallback for APKs that apkInspector cannot open.
                 apk = _parse_raw(apk_path)
         return _parse_apk_obj(apk)
     except Exception as e:

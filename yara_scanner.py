@@ -1,9 +1,11 @@
-"""Skanowanie próbek regułami YARA z yara_rules/. Rozpoznaje rodziny/kampanie,
-które ręcznie zidentyfikowaliśmy w poprzednich raportach (patrz custom_families.yar),
-zamiast polegać wyłącznie na klasyfikacji MobSF.
+"""Scan samples with the YARA rules in yara_rules/.
 
-Jeśli pakiet `yara-python` nie jest zainstalowany, moduł działa jako no-op
-(zwraca listę pustą) — nie blokuje reszty pipeline'u.
+These rules cover families and campaigns we identified by hand in earlier
+reports (see custom_families.yar) rather than relying on MobSF's classification
+alone.
+
+If yara-python is not installed the module degrades to a no-op and returns an
+empty list, so a missing optional dependency never blocks the pipeline.
 """
 import os
 import zipfile
@@ -17,175 +19,179 @@ except ImportError:
     _YARA_AVAILABLE = False
 
 _compiled = None
-# Pliki, ktorych nie udalo sie skompilowac — do wgladu dla wywolujacego.
-_bledne_pliki = []
+# Files that failed to compile, kept around so callers can ask about them.
+_broken_files = []
 
 
 def _compile_rules():
-    """Kompiluje reguly plik po pliku, pomijajac te z bledem skladni.
+    """Compile the rules file by file, skipping any with a syntax error.
 
-    Wczesniej wszystkie pliki szly do jednego yara.compile(), wiec literowka
-    w jednej regule wywracala CALY zestaw — scan() zwracal po cichu pusta liste
-    i detekcja YARA znikala niezauwazona. Teraz zepsuty plik kosztuje wylacznie
-    siebie, a informacja o tym jest glosna.
+    Everything used to go into a single yara.compile(), so one typo in one rule
+    took down the WHOLE set: scan() quietly returned an empty list and YARA
+    detection disappeared without anyone noticing. Now a broken file costs only
+    itself, and it says so loudly.
     """
-    global _compiled, _bledne_pliki
+    global _compiled, _broken_files
     if _compiled is not None:
         return _compiled
     if not _YARA_AVAILABLE or not os.path.isdir(RULES_DIR):
         _compiled = False
         return _compiled
 
-    nazwy = sorted(n for n in os.listdir(RULES_DIR) if n.endswith((".yar", ".yara")))
-    if not nazwy:
-        print("[yara_scanner] UWAGA: brak plikow regul w %s" % RULES_DIR)
+    names = sorted(n for n in os.listdir(RULES_DIR) if n.endswith((".yar", ".yara")))
+    if not names:
+        print("[yara_scanner] WARNING: no rule files in %s" % RULES_DIR)
         _compiled = False
         return _compiled
 
-    dobre, _bledne_pliki = {}, []
-    for nazwa in nazwy:
-        sciezka = os.path.join(RULES_DIR, nazwa)
+    good, _broken_files = {}, []
+    for name in names:
+        path = os.path.join(RULES_DIR, name)
         try:
-            yara.compile(filepath=sciezka)          # walidacja pojedynczego pliku
-            dobre[nazwa] = sciezka
+            yara.compile(filepath=path)          # validate this file on its own
+            good[name] = path
         except Exception as e:
-            _bledne_pliki.append((nazwa, str(e)))
-            print("[yara_scanner] !!! POMINIETO regule %s — blad skladni: %s" % (nazwa, e))
+            _broken_files.append((name, str(e)))
+            print("[yara_scanner] !!! SKIPPED rule %s, syntax error: %s" % (name, e))
 
-    if not dobre:
-        print("[yara_scanner] !!! ZADNA regula sie nie skompilowala — detekcja YARA WYLACZONA")
+    if not good:
+        print("[yara_scanner] !!! no rule compiled at all, YARA detection is OFF")
         _compiled = False
         return _compiled
 
     try:
-        _compiled = yara.compile(filepaths=dobre)
-    except Exception as e:                          # nie powinno wystapic po walidacji
-        print("[yara_scanner] !!! blad laczenia regul: %s — detekcja YARA WYLACZONA" % e)
+        _compiled = yara.compile(filepaths=good)
+    except Exception as e:                       # should not happen after validation
+        print("[yara_scanner] !!! failed to link rules: %s, YARA detection is OFF" % e)
         _compiled = False
         return _compiled
 
-    ile_regul = sum(1 for _ in _compiled)
-    print("[yara_scanner] zaladowano %d regul z %d plikow%s" % (
-        ile_regul, len(dobre),
-        (" (POMINIETO %d zepsutych)" % len(_bledne_pliki)) if _bledne_pliki else ""))
+    rule_count = sum(1 for _ in _compiled)
+    print("[yara_scanner] loaded %d rules from %d files%s" % (
+        rule_count, len(good),
+        (" (SKIPPED %d broken)" % len(_broken_files)) if _broken_files else ""))
     return _compiled
 
 
-def bledne_pliki_regul():
-    """Lista (nazwa, blad) plikow pominietych przy ostatniej kompilacji."""
+def broken_rule_files():
+    """(filename, error) for every file skipped during the last compile."""
     _compile_rules()
-    return list(_bledne_pliki)
+    return list(_broken_files)
 
 
-# APK to ZIP, a jego wpisy sa DEFLATE'owane. YARA dostajaca sciezke pliku widzi
-# skompresowane bajty, wiec ZADEN string z classes.dex nie moze sie dopasowac —
-# potwierdzone eksperymentem (ten sam marker: wpis STORED trafia, DEFLATE nie)
-# i danymi z produkcji: 38/38 probek mialo puste yara_matches przy 13 zaladowanych
-# regulach. Dlatego oprocz surowego pliku skanujemy tez odkompresowana zawartosc.
+# An APK is a ZIP and its entries are DEFLATEd. YARA handed a file path sees
+# the compressed bytes, so NO string from classes.dex can ever match. Confirmed
+# by experiment (same marker: a STORED entry hits, a DEFLATEd one does not) and
+# by production data: 38 of 38 samples had empty yara_matches with 13 rules
+# loaded. Hence the second pass over decompressed content.
 #
-# Surowego pliku NIE zastepujemy: blok podpisu v2/v3 lezy poza wpisami ZIP-a,
-# nieskompresowany, i to na nim dzialaja reguly na modul RSA z campaign_certs.yar.
-_MAX_WPIS_BYTES = 64 * 1024 * 1024
-_MAX_LACZNIE_BYTES = 256 * 1024 * 1024
+# The raw pass is NOT replaced by it: the v2/v3 signature block lives outside
+# the ZIP entries, uncompressed, and that is what the RSA-modulus rules in
+# campaign_certs.yar match against.
+_MAX_ENTRY_BYTES = 64 * 1024 * 1024
+_MAX_TOTAL_BYTES = 256 * 1024 * 1024
 
-# Wpisy niosace stringi, na ktorych opieraja sie reguly: kod (dex), manifest,
-# zasoby (etykieta aplikacji), payloady w assets/ i biblioteki natywne.
-_ROZSZERZENIA_DO_SKANU = (".dex", ".arsc", ".so")
-_NAZWY_DO_SKANU = ("androidmanifest.xml",)
-_PREFIKSY_DO_SKANU = ("assets/",)
-
-
-def _wpis_do_skanu(nazwa: str) -> bool:
-    n = nazwa.lower()
-    return (n.endswith(_ROZSZERZENIA_DO_SKANU)
-            or n.rsplit("/", 1)[-1] in _NAZWY_DO_SKANU
-            or n.startswith(_PREFIKSY_DO_SKANU))
+# Entries carrying the strings rules rely on: code (dex), the manifest,
+# resources (the app label), payloads in assets/ and native libraries.
+_SCANNED_EXTENSIONS = (".dex", ".arsc", ".so")
+_SCANNED_NAMES = ("androidmanifest.xml",)
+_SCANNED_PREFIXES = ("assets/",)
 
 
-def _odkompresowana_zawartosc(apk_path: str) -> bytes:
-    """Skleja odkompresowane wpisy APK w jeden bufor do skanowania.
+def _entry_worth_scanning(name: str) -> bool:
+    """Is this ZIP entry one of the kinds our rules look at?"""
+    n = name.lower()
+    return (n.endswith(_SCANNED_EXTENSIONS)
+            or n.rsplit("/", 1)[-1] in _SCANNED_NAMES
+            or n.startswith(_SCANNED_PREFIXES))
 
-    Limity sa takie same jak w dex_analyzer i z tego samego powodu: deklarowany
-    file_size w spreparowanym archiwum potrafi klamac, wiec cap egzekwujemy
-    takze przy samym odczycie. Blad pojedynczego wpisu pomijamy — lepiej
-    przeskanowac czesc niz nic.
+
+def _decompressed_content(apk_path: str) -> bytes:
+    """Glue the decompressed APK entries into one buffer to scan.
+
+    The caps match dex_analyzer's, for the same reason: the declared file_size
+    in a crafted archive can lie, so the limit is enforced at read time too. A
+    single unreadable entry is skipped - scanning part of a sample beats
+    scanning none of it.
     """
-    kawalki, razem = [], 0
+    chunks, total = [], 0
     try:
         with zipfile.ZipFile(apk_path) as z:
             for info in z.infolist():
-                if info.is_dir() or not _wpis_do_skanu(info.filename):
+                if info.is_dir() or not _entry_worth_scanning(info.filename):
                     continue
-                if info.file_size > _MAX_WPIS_BYTES:
+                if info.file_size > _MAX_ENTRY_BYTES:
                     continue
-                zostalo = _MAX_LACZNIE_BYTES - razem
-                if zostalo <= 0:
+                remaining = _MAX_TOTAL_BYTES - total
+                if remaining <= 0:
                     break
                 try:
                     with z.open(info) as fh:
-                        dane = fh.read(min(_MAX_WPIS_BYTES, zostalo) + 1)
+                        data = fh.read(min(_MAX_ENTRY_BYTES, remaining) + 1)
                 except Exception as e:
-                    # Wpis, ktorego zipfile nie potrafi rozpakowac. Android bywa
-                    # znacznie bardziej pobłażliwy i takie APK instaluje, wiec to
-                    # nie jest "plik uszkodzony" — to technika anty-analityczna,
-                    # i to skuteczna: KAZDA regula opierajaca sie na stringach
-                    # z tego wpisu cicho nie strzeli.
+                    # An entry zipfile cannot unpack. Android is far more
+                    # forgiving and installs these happily, so this is not a
+                    # "corrupt file" - it is an anti-analysis technique, and an
+                    # effective one: EVERY rule resting on strings from this
+                    # entry silently fails to fire.
                     #
-                    # Dwa potwierdzone warianty z probek w bazie:
-                    #   * metoda kompresji spoza standardu (dozwolone 0, 8, 9, 12, 14)
-                    #     — probka Venom, AndroidManifest.xml z metoda 17180 w katalogu
-                    #     centralnym i 32040 w naglowku lokalnym (NotImplementedError),
-                    #   * ustawiony bit 0 flag ogolnych, czyli "wpis zaszyfrowany"
-                    #     — klaster tiktok18/MetaMask, gdzie w jednej probce oznaczono
-                    #     tak classes.dex i AndroidManifest.xml, a w drugiej WSZYSTKIE
-                    #     wpisy, przez co bufor zawartosci byl calkowicie pusty
-                    #     (RuntimeError "File is encrypted").
-                    # Szczegoly w yara_rules/venom_tools.yar i metamask_loader.yar.
+                    # Two confirmed variants among samples in the database:
+                    #   * a non-standard compression method (0, 8, 9, 12, 14 are
+                    #     legal) - the Venom sample declared AndroidManifest.xml
+                    #     with method 17180 in the central directory and 32040 in
+                    #     the local header (NotImplementedError),
+                    #   * general-purpose bit 0 set, i.e. "entry is encrypted" -
+                    #     the tiktok18/MetaMask cluster, where one sample marked
+                    #     classes.dex and AndroidManifest.xml and another marked
+                    #     EVERY entry, leaving the content buffer completely
+                    #     empty (RuntimeError "File is encrypted").
+                    # Details in yara_rules/venom_tools.yar and metamask_loader.yar.
                     #
-                    # Lapiemy szeroko (Exception), bo lista trikow nie jest zamknieta,
-                    # a kazdy z nich objawia sie tak samo: cisza nie do odroznienia od
-                    # braku dopasowania. Samych bajtow nie doklejamy — przebieg po
-                    # surowym pliku i tak je widzi, wiec zysku by nie bylo, a szum
-                    # moglby dac falszywki.
-                    print("[yara_scanner] UWAGA: %s nie do rozpakowania (%s, metoda %d,"
-                          " flagi 0x%04x) — pominiety w przebiegu po zawartosci, reguly"
-                          " oparte na jego stringach NIE zadzialaja na tej probce"
+                    # We catch broadly (Exception) because the list of tricks is
+                    # open-ended and they all present identically: silence that
+                    # is indistinguishable from "no match". The raw bytes are
+                    # not appended as a consolation - the raw pass already sees
+                    # them, so there is nothing to gain and noise to lose.
+                    print("[yara_scanner] WARNING: cannot unpack %s (%s, method %d,"
+                          " flags 0x%04x) - skipped in the content pass, rules"
+                          " resting on its strings WILL NOT fire on this sample"
                           % (info.filename, type(e).__name__, info.compress_type,
                              info.flag_bits))
                     continue
-                if len(dane) > zostalo:
+                if len(data) > remaining:
                     break
-                kawalki.append(dane)
-                razem += len(dane)
+                chunks.append(data)
+                total += len(data)
     except Exception:
         return b""
-    return bytes([0]).join(kawalki)
+    # A NUL between entries stops a string from matching across the seam.
+    return bytes([0]).join(chunks)
 
 
 def scan(apk_path: str) -> list[dict]:
-    """Zwraca listę {rule, family, description} dla dopasowanych reguł custom YARA."""
+    """Return {rule, family, description} for every matching custom YARA rule."""
     rules = _compile_rules()
     if not rules:
         return []
 
     try:
-        matches = list(rules.match(apk_path))     # surowe bajty: blok podpisu v2/v3
+        matches = list(rules.match(apk_path))     # raw bytes: the v2/v3 signature block
     except Exception as e:
-        print(f"[yara_scanner] Błąd skanowania {apk_path}: {e}")
+        print(f"[yara_scanner] error scanning {apk_path}: {e}")
         return []
 
-    dane = _odkompresowana_zawartosc(apk_path)
-    if dane:
+    content = _decompressed_content(apk_path)
+    if content:
         try:
-            matches += list(rules.match(data=dane))
+            matches += list(rules.match(data=content))
         except Exception as e:
-            print(f"[yara_scanner] Błąd skanowania zawartości {apk_path}: {e}")
+            print(f"[yara_scanner] error scanning content of {apk_path}: {e}")
 
-    results, widziane = [], set()
+    results, seen = [], set()
     for m in matches:
-        if m.rule in widziane:      # ta sama regula z obu przebiegow
+        if m.rule in seen:      # same rule hit by both passes
             continue
-        widziane.add(m.rule)
+        seen.add(m.rule)
         results.append({
             "rule": m.rule,
             "family": m.meta.get("family", m.rule),
@@ -195,23 +201,23 @@ def scan(apk_path: str) -> list[dict]:
 
 
 def available() -> bool:
+    """Is yara-python importable?"""
     return _YARA_AVAILABLE
 
 
 def scan_isolated(apk_path: str, timeout: int = 60) -> list[dict]:
-    """scan() uruchomione w osobnym procesie z twardym limitem czasu.
+    """scan() in a child process under a hard deadline.
 
-    libyara to kod natywny (C) parsujacy plik kontrolowany przez atakujacego —
-    blad w nim nie konczy sie wyjatkiem Pythona, tylko naruszeniem pamieci albo
-    zapetleniem. Osobny proces sprawia, ze najgorszym przypadkiem jest utrata
-    wynikow YARA dla jednej probki.
+    libyara is native C parsing an attacker-controlled file. A bug in there does
+    not surface as a Python exception but as memory corruption or a spin. A
+    separate process means the worst case is losing YARA results for one sample.
     """
     from isolation import run_isolated, IsolationTimeout, IsolationError
     try:
         return run_isolated(scan, (apk_path,), timeout=timeout)
     except IsolationTimeout as e:
-        print(f"[yara_scanner] skanowanie przerwane: {e}")
+        print(f"[yara_scanner] scan aborted: {e}")
         return []
     except IsolationError as e:
-        print(f"[yara_scanner] blad: {str(e).splitlines()[-1]}")
+        print(f"[yara_scanner] error: {str(e).splitlines()[-1]}")
         return []

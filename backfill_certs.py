@@ -1,25 +1,24 @@
-"""Uzupelnia brakujace certyfikaty dla probek zapisanych przed dodaniem
-obslugi schematow podpisu v2/v3 (patrz cert_analyzer._pobierz_cert_der).
+"""Backfill missing certificates for samples stored before v2/v3 signature
+support existed (see cert_analyzer.extract_cert_der).
 
-Stary kod czytal wylacznie podpis JAR (v1), wiec APK budowane pod SDK 30+
-trafialy do bazy z cert_sha1 = NULL i nie dawaly sie klastrowac po podpisie.
-Skrypt pobiera te probki ponownie z MWDB, wyciaga sam certyfikat i uzupelnia
-baze. Pliki sa kasowane natychmiast po sparsowaniu.
+The old code only read the JAR signature (v1), so APKs built for SDK 30+ landed
+in the database with cert_sha1 = NULL and could not be clustered by signature.
+This script re-fetches those samples from MWDB, extracts the certificate alone
+and fills the gap. Nothing is written to disk.
 
-Uzycie:
-    python backfill_certs.py                 # podglad, nic nie pobiera
-    python backfill_certs.py --apply         # pobiera i uzupelnia
-    python backfill_certs.py --apply --limit 20   # tylko 20 probek (test)
+Usage:
+    python backfill_certs.py                      # preview, downloads nothing
+    python backfill_certs.py --apply              # fetch and backfill
+    python backfill_certs.py --apply --limit 20   # only 20 samples (a test run)
 
-Skrypt jest wznawialny: bierze wylacznie wiersze z cert_sha1 IS NULL, wiec
-kolejne uruchomienie kontynuuje od miejsca przerwania.
+The script is resumable: it only picks rows with cert_sha1 IS NULL, so a later
+run continues where the last one stopped.
 """
 import hashlib
 import os
 import shutil
 import sqlite3
 import sys
-import traceback
 from datetime import datetime
 
 from isolation import run_isolated
@@ -29,17 +28,20 @@ from mwdb_client import get_client
 DB = os.path.join("output", "threat_intel.db")
 
 
-def kopia_bazy():
+def backup_database():
+    """Copy the database next to itself with a timestamp, return the new name."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    cel = f"{DB}.bak-{stamp}"
-    shutil.copy2(DB, cel)
-    return cel
+    target = f"{DB}.bak-{stamp}"
+    shutil.copy2(DB, target)
+    return target
 
 
-def brakujace(limit=None):
+def samples_without_cert(limit=None):
+    """Rows that never got a certificate, newest first."""
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
-    sql = "SELECT sha256, package, filename FROM samples WHERE cert_sha1 IS NULL ORDER BY first_seen DESC"
+    sql = ("SELECT sha256, package, filename FROM samples "
+           "WHERE cert_sha1 IS NULL ORDER BY first_seen DESC")
     if limit:
         sql += f" LIMIT {int(limit)}"
     rows = conn.execute(sql).fetchall()
@@ -47,18 +49,18 @@ def brakujace(limit=None):
     return [dict(r) for r in rows]
 
 
-def cert_dla_probki(mwdb, sha256):
-    """Pobiera probke i wyciaga certyfikat. Zwraca dict cert albo None.
+def cert_for_sample(mwdb, sha256):
+    """Fetch one sample and extract its certificate. Returns the cert dict or None.
 
-    Probka NIE trafia na dysk: pod Windowsem Defender flaguje zapisane malware
-    i blokuje ponowne otwarcie pliku (widoczne jako "[Errno 22] Invalid
-    argument"). Parsowanie idzie z pamieci, w osobnym procesie z limitem czasu.
+    The sample never touches the disk: on Windows, Defender flags saved malware
+    and blocks reopening the file (which surfaces as "[Errno 22] Invalid
+    argument"). Parsing runs from memory, in a child process under a timeout.
     """
-    dane = mwdb.query_file(sha256).download()
-    if hashlib.sha256(dane).hexdigest() != sha256:
-        raise ValueError("pobrany plik ma niezgodny SHA-256")
-    wynik = run_isolated(parse_apk_bytes, (dane,), timeout=90)
-    return wynik.get("cert")
+    data = mwdb.query_file(sha256).download()
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError("downloaded file has a mismatched SHA-256")
+    parsed = run_isolated(parse_apk_bytes, (data,), timeout=90)
+    return parsed.get("cert")
 
 
 def main():
@@ -67,69 +69,70 @@ def main():
     if "--limit" in sys.argv:
         limit = int(sys.argv[sys.argv.index("--limit") + 1])
 
-    cele = brakujace(limit)
-    print("TRYB:", "ZAPIS" if apply_ else "PODGLAD (nic nie zostanie pobrane)")
-    print(f"Probek bez certyfikatu do przetworzenia: {len(cele)}")
+    targets = samples_without_cert(limit)
+    print("MODE:", "APPLY" if apply_ else "PREVIEW (nothing will be downloaded)")
+    print(f"Samples without a certificate: {len(targets)}")
     print()
 
     if not apply_:
-        for r in cele[:10]:
-            print("   %s  %s" % (r["sha256"][:16], r["package"] or "(brak pakietu)"))
-        if len(cele) > 10:
-            print(f"   ... i {len(cele) - 10} wiecej")
+        for r in targets[:10]:
+            print("   %s  %s" % (r["sha256"][:16], r["package"] or "(no package)"))
+        if len(targets) > 10:
+            print(f"   ... and {len(targets) - 10} more")
         print()
-        print("Kazda probka jest pobierana z MWDB (to moze potrwac).")
-        print("Uruchom z --apply, zeby wykonac.")
+        print("Every sample is downloaded from MWDB, so this takes a while.")
+        print("Run with --apply to execute.")
         return
 
-    if not cele:
-        print("Nie ma czego uzupelniac.")
+    if not targets:
+        print("Nothing to backfill.")
         return
 
-    print("Kopia zapasowa bazy:", kopia_bazy())
+    print("Database backup:", backup_database())
     print()
 
     mwdb = get_client()
     conn = sqlite3.connect(DB)
 
-    statystyki = {"v1": 0, "v2": 0, "v3": 0, "brak_podpisu": 0, "blad": 0}
+    stats = {"v1": 0, "v2": 0, "v3": 0, "no_signature": 0, "error": 0}
     try:
-        for i, r in enumerate(cele, 1):
+        for i, r in enumerate(targets, 1):
             sha256 = r["sha256"]
-            etykieta = r["package"] or r["filename"] or sha256[:16]
+            label = r["package"] or r["filename"] or sha256[:16]
             try:
-                cert = cert_dla_probki(mwdb, sha256)
+                cert = cert_for_sample(mwdb, sha256)
             except Exception as e:
-                statystyki["blad"] += 1
-                print("  [%d/%d] %-34s BLAD: %s" % (i, len(cele), etykieta[:34], str(e)[:60]))
+                stats["error"] += 1
+                print("  [%d/%d] %-34s ERROR: %s" % (i, len(targets), label[:34], str(e)[:60]))
                 continue
 
             if not cert or cert.get("error") or not cert.get("sha1"):
-                statystyki["brak_podpisu"] += 1
-                powod = (cert or {}).get("error", "brak danych certyfikatu")
-                print("  [%d/%d] %-34s bez certyfikatu (%s)" % (i, len(cele), etykieta[:34], powod[:40]))
+                stats["no_signature"] += 1
+                reason = (cert or {}).get("error", "no certificate data")
+                print("  [%d/%d] %-34s no certificate (%s)" % (
+                    i, len(targets), label[:34], reason[:40]))
                 continue
 
-            schemat = cert.get("signature_scheme") or "?"
-            statystyki[schemat] = statystyki.get(schemat, 0) + 1
+            scheme = cert.get("signature_scheme") or "?"
+            stats[scheme] = stats.get(scheme, 0) + 1
             conn.execute(
                 "UPDATE samples SET cert_sha1=?, cert_subject=? WHERE sha256=?",
                 (cert["sha1"], cert.get("subject"), sha256),
             )
             conn.commit()
-            print("  [%d/%d] %-34s %s  schemat %s" % (
-                i, len(cele), etykieta[:34], cert["sha1"][:16], schemat))
+            print("  [%d/%d] %-34s %s  scheme %s" % (
+                i, len(targets), label[:34], cert["sha1"][:16], scheme))
     except KeyboardInterrupt:
         print()
-        print("Przerwano. Wyniki dotad zapisane sa juz w bazie — mozna uruchomic ponownie.")
+        print("Interrupted. Everything done so far is committed - just run it again.")
     finally:
         conn.close()
 
     print()
-    print("Podsumowanie:")
-    for k, v in statystyki.items():
-        if v:
-            print("   %-14s %d" % (k, v))
+    print("Summary:")
+    for key, value in stats.items():
+        if value:
+            print("   %-14s %d" % (key, value))
 
 
 if __name__ == "__main__":

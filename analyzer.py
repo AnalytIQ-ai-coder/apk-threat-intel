@@ -4,9 +4,10 @@ import sys
 import traceback
 from datetime import datetime, timezone
 
-# Nazwy aplikacji w probkach bywaja pisane homoglifami (cyrylica, cherokee).
-# Jesli konsola ma kodowanie inne niz UTF-8, samo wypisanie takiej nazwy
-# przerywa caly run UnicodeEncodeError - wymuszamy UTF-8 z podmiana znakow.
+# App labels in samples are sometimes written in homoglyphs (Cyrillic,
+# Cherokee). On a console with a non-UTF-8 encoding, merely printing such a
+# name kills the whole run with UnicodeEncodeError, so force UTF-8 and let
+# unmappable characters be replaced.
 for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(encoding="utf-8", errors="replace")
@@ -26,7 +27,7 @@ os.makedirs("output", exist_ok=True)
 
 from mwdb_client import get_client
 from downloader import save_apk
-from manifest_parser import parse_apk_timeout, split_bez_kodu
+from manifest_parser import parse_apk_timeout, split_has_no_code
 from mailer import send_report
 from state import load_last_run, save_last_run
 from vt_client import check_sha256, upload_file
@@ -42,10 +43,10 @@ import enrichment
 
 console = rich_console.Console()
 
-# Komórki tabeli zawierają dane pochodzące wprost z analizowanej próbki (stringi
-# z DEX, nazwy plików w archiwum). Surowe bajty w terminalu to nie tylko brzydki
-# wydruk — mogą nieść sekwencje sterujące ANSI/OSC. Dlatego każda komórka jest
-# czyszczona ze znaków sterujących i przycinana do rozsądnej długości.
+# Table cells carry data taken straight from the sample under analysis (DEX
+# strings, archive file names). Raw bytes in a terminal are not merely ugly -
+# they can carry ANSI/OSC control sequences. So every cell is stripped of
+# control characters and trimmed to a sane length.
 _MAX_CELL_CHARS = 2000
 
 
@@ -62,21 +63,23 @@ def _sanitize_cell(value):
         truncated_by = len(cleaned) - _MAX_CELL_CHARS
         cleaned = cleaned[:_MAX_CELL_CHARS]
 
-    # Dane z próbki mogą przypadkiem (lub celowo) zawierać coś, co rich weźmie
-    # za znacznik — wtedy render rzuca wyjątkiem i psuje cały run.
+    # Sample data can contain, by accident or by design, something rich reads
+    # as markup - and then rendering raises and takes the whole run with it.
     try:
         render_markup(cleaned)
     except Exception:
         cleaned = escape(cleaned)
 
     if truncated_by:
-        cleaned += f"\n[dim]… obcięto {truncated_by} znaków[/dim]"
+        cleaned += f"\n[dim]... truncated {truncated_by} characters[/dim]"
     return cleaned
 
 
 def _sanitize_plain(value: str, limit: int = 256) -> str:
-    """Dla wartości, które nigdy nie powinny nieść znaczników rich
-    (np. nazwa pliku z MWDB) — czyścimy i escapujemy bezwarunkowo."""
+    """For values that should never carry rich markup at all.
+
+    A filename out of MWDB, for instance: cleaned and escaped unconditionally.
+    """
     if not isinstance(value, str):
         value = str(value)
     cleaned = "".join(c for c in value if c.isprintable())
@@ -86,7 +89,7 @@ def _sanitize_plain(value: str, limit: int = 256) -> str:
 
 
 class SafeTable(Table):
-    """Table sanityzująca każdą komórkę — patrz _sanitize_cell."""
+    """A Table that sanitises every cell - see _sanitize_cell."""
 
     def add_row(self, *renderables, **kwargs):
         return super().add_row(*(_sanitize_cell(r) for r in renderables), **kwargs)
@@ -105,7 +108,7 @@ def filter_new(files: list, since: datetime) -> list:
         upload_time = getattr(obj, "upload_time", None)
         if upload_time is None:
             continue
-        # mwdblib zwraca upload_time jako datetime (może być naive lub aware)
+        # mwdblib hands back upload_time as a datetime, naive or aware
         if upload_time.tzinfo is None:
             upload_time = upload_time.replace(tzinfo=timezone.utc)
         if upload_time >= since:
@@ -118,21 +121,22 @@ def print_result(data: dict):
     table.add_column("Field", style="cyan", no_wrap=True)
     table.add_column("Value", style="white")
 
-    # Nazwa pakietu i aplikacji bywaja celowo spreparowane (homoglify, znaki
-    # zero-width), wiec escapujemy je bezwarunkowo - nic nie moze zniknac.
+    # Package and app names are sometimes crafted deliberately (homoglyphs,
+    # zero-width characters), so escape both unconditionally - nothing here is
+    # allowed to silently disappear.
     table.add_row("Package", _sanitize_plain(data.get("package") or "N/A"))
     table.add_row("App name", _sanitize_plain(data.get("app_name") or "N/A"))
 
-    # Split z App Bundle to nie aplikacja, tylko jej kawalek. Mowimy o tym od
-    # razu pod nazwa, zeby puste "Permissions: none" nizej nie bylo czytane
-    # jako "ta aplikacja nic nie chce".
+    # An App Bundle split is not an application, only a piece of one. Say so
+    # right under the name, so the empty "Permissions: none" further down is
+    # not read as "this app asks for nothing".
     split = data.get("split")
     if split:
-        opis = f"{split['nazwa']} (rodzaj: {split['rodzaj']}"
-        if split.get("ma_dex") is not None:
-            opis += ", z kodem" if split["ma_dex"] else ", bez kodu"
-        opis += ")"
-        table.add_row("[bold yellow]Split z AAB[/bold yellow]", opis)
+        description = f"{split['name']} (kind: {split['kind']}"
+        if split.get("has_dex") is not None:
+            description += ", with code" if split["has_dex"] else ", without code"
+        description += ")"
+        table.add_row("[bold yellow]AAB split[/bold yellow]", description)
     table.add_row("Version", f"{data.get('version_name')} ({data.get('version_code')})")
     table.add_row("Min SDK", str(data.get("min_sdk") or "N/A"))
     table.add_row("Target SDK", str(data.get("target_sdk") or "N/A"))
@@ -144,10 +148,10 @@ def print_result(data: dict):
     if cert and not cert.get("error"):
         self_signed = "[red]YES[/red]" if cert.get("self_signed") else "[green]NO[/green]"
         expired = " [red](EXPIRED)[/red]" if cert.get("expired") else ""
-        schemat = cert.get("signature_scheme")
-        schemat_str = f"  [dim](schemat {schemat})[/dim]" if schemat else ""
+        scheme = cert.get("signature_scheme")
+        scheme_str = f"  [dim](scheme {scheme})[/dim]" if scheme else ""
         cert_str = (
-            f"Self-signed: {self_signed}{expired}{schemat_str}\n"
+            f"Self-signed: {self_signed}{expired}{scheme_str}\n"
             f"Subject: {cert.get('subject', 'N/A')}\n"
             f"Valid: {cert.get('valid_from', '')[:10]} → {cert.get('valid_to', '')[:10]}\n"
             f"SHA1: {cert.get('sha1', 'N/A')}"
@@ -254,13 +258,13 @@ def print_result(data: dict):
             )
             table.add_row("[red]High entropy files[/red]", entropy_str)
 
-    # YARA — rodziny/kampanie rozpoznane po własnych regułach
+    # YARA: families and campaigns recognised by our own rules
     yara_matches = data.get("yara_matches") or []
     if yara_matches:
         yara_str = "\n".join(f"[bold red]{m['family']}[/bold red] — {m['description']}" for m in yara_matches)
         table.add_row("[bold red]YARA match[/bold red]", yara_str)
 
-    # IOC — portfele, kontakty operatorów, dead-dropy
+    # IOCs: wallets, operator contacts, dead drops
     iocs = data.get("iocs") or {}
     if iocs and not iocs.get("error"):
         wallets = iocs.get("wallets", {})
@@ -281,7 +285,7 @@ def print_result(data: dict):
         if drop_lines:
             table.add_row("[red]Dead-drop resolvers[/red]", "\n".join(drop_lines))
 
-    # Wzbogacanie zewnętrzne — abuse.ch (ThreatFox/URLhaus/MalwareBazaar)
+    # External enrichment: abuse.ch (ThreatFox/URLhaus/MalwareBazaar)
     enrich = data.get("enrichment") or {}
     mb = enrich.get("malwarebazaar") or {}
     if mb.get("known"):
@@ -306,10 +310,10 @@ def print_result(data: dict):
         for c in correlations[:5]:
             names = ", ".join(s.get("filename", s.get("sha256", "")[:12]) for s in c.get("seen_in", [])[:3])
             if c["type"] == "shared_certificate":
-                corr_lines.append(f"Cert {c['value'][:16]}... też w: {names}")
+                corr_lines.append(f"Cert {c['value'][:16]}... also in: {names}")
             else:
-                corr_lines.append(f"{c['ioc_type']} '{c['value'][:40]}' też w: {names}")
-        table.add_row("[bold yellow]Znane z wcześniejszych runów[/bold yellow]", "\n".join(corr_lines))
+                corr_lines.append(f"{c['ioc_type']} '{c['value'][:40]}' also in: {names}")
+        table.add_row("[bold yellow]Seen in earlier runs[/bold yellow]", "\n".join(corr_lines))
 
     permissions = data.get("permissions", [])
     table.add_row("Permissions", "\n".join(permissions) if permissions else "none")
@@ -346,12 +350,12 @@ def main():
 
     for obj in files:
         sha256 = getattr(obj, "sha256", "?")
-        # Nazwa nadana przez wrzucającego próbkę — trafia do print() i do bazy,
-        # więc czyścimy ją ze znaków sterujących i znaczników rich.
+        # The name the uploader gave the sample. It reaches print() and the
+        # database, so strip control characters and rich markup from it.
         filename = _sanitize_plain(getattr(obj, "name", "") or "")
 
-        # Próbki z tagiem runnable:android:apk często mają nazwę = sha256 bez rozszerzenia,
-        # więc nie można polegać wyłącznie na nazwie pliku
+        # Samples tagged runnable:android:apk are often named sha256 with no
+        # extension, so the filename alone cannot be trusted
         tags = list(getattr(obj, "tags", None) or [])
         looks_like_apk = filename.lower().endswith(".apk") or "runnable:android:apk" in tags
         if filename.lower().endswith(".xapk") or not looks_like_apk:
@@ -362,8 +366,8 @@ def main():
         if existing:
             threat_db.mark_duplicate(sha256, filename)
             print(
-                f"\n[dim][~] Skipping {filename} ({sha256[:16]}...) — duplikat próbki "
-                f"już przeanalizowanej jako {existing.get('filename')}[/dim]"
+                f"\n[dim][~] Skipping {filename} ({sha256[:16]}...) - duplicate of a "
+                f"sample already analysed as {existing.get('filename')}[/dim]"
             )
             continue
 
@@ -390,7 +394,7 @@ def main():
             if VT_API_KEY:
                 vt = check_sha256(sha256)
                 if vt.get("not_found") and apk_path and os.path.exists(apk_path):
-                    print(f"[dim][~] Hash not in VT — uploading file for analysis...[/dim]")
+                    print(f"[dim][~] Hash not in VT, uploading the file for analysis...[/dim]")
                     vt = upload_file(apk_path, sha256)
                 data["vt"] = vt
 
@@ -398,22 +402,23 @@ def main():
                 print(f"[dim][~] MobSF analysis...[/dim]")
                 data["mobsf"] = mobsf_analyze(apk_path, dynamic=MOBSF_DYNAMIC)
 
-            if split_bez_kodu(data):
-                # Splitu konfiguracyjnego nie ma po co wysylac do modelu: nie ma
-                # uprawnien, komponentow ani DEX-a, wiec prompt skladalby sie
-                # z samych pustych pol. Model odpowiadal na to "RISK: low,
-                # brak uprawnien" i taka ocena szla do bazy — 164 wiersze w
-                # output/threat_intel.db powstaly wlasnie tak. To falszywy
-                # negatyw wygenerowany z niczego, a nie ocena probki.
-                powod = "split %s bez kodu — nie ma czego oceniac" % data["split"]["nazwa"]
-                print(f"[dim][~] Pomijam AI: {powod}[/dim]")
-                data["ai"] = {"skipped": powod}
+            if split_has_no_code(data):
+                # There is no point sending a config split to the model: no
+                # permissions, no components, no DEX, so the prompt would be
+                # nothing but empty fields. The model answered those with
+                # "RISK: low, no permissions" and that rating went into the
+                # database - 164 rows in output/threat_intel.db came about
+                # exactly this way. A false negative conjured out of nothing,
+                # not an assessment of a sample.
+                reason = "split %s has no code, nothing to assess" % data["split"]["name"]
+                print(f"[dim][~] Skipping AI: {reason}[/dim]")
+                data["ai"] = {"skipped": reason}
             else:
                 print(f"[dim][~] Asking AI...[/dim]")
                 data["ai"] = assess_risk(data)
 
             if ENRICHMENT_ENABLED:
-                print(f"[dim][~] Sprawdzam IOC w ThreatFox/URLhaus/MalwareBazaar...[/dim]")
+                print(f"[dim][~] Checking IOCs against ThreatFox/URLhaus/MalwareBazaar...[/dim]")
                 data["enrichment"] = enrichment.enrich(data, data.get("iocs") or {})
 
             correlation = threat_db.store_sample(data, data.get("iocs") or {})
@@ -444,19 +449,19 @@ def main():
 
         db_stats = threat_db.stats()
         print(
-            f"[dim][~] Baza threat-intel: {db_stats['samples']} próbek, "
-            f"{db_stats['unique_iocs']} unikalnych IOC, {db_stats['unique_certs']} certów, "
-            f"{db_stats['duplicates_skipped']} duplikatów pominiętych łącznie[/dim]"
+            f"[dim][~] Threat-intel database: {db_stats['samples']} samples, "
+            f"{db_stats['unique_iocs']} unique IOCs, {db_stats['unique_certs']} certificates, "
+            f"{db_stats['duplicates_skipped']} duplicates skipped in total[/dim]"
         )
 
         reused = threat_db.top_reused_iocs(limit=5)
         if reused:
-            print("[yellow][~] Najczęściej powtarzające się IOC w historii:[/yellow]")
+            print("[yellow][~] Most frequently reused IOCs on record:[/yellow]")
             for r in reused:
-                print(f"    [{r['ioc_type']}] {r['value'][:60]} — {r['sample_count']} próbek")
+                print(f"    [{r['ioc_type']}] {r['value'][:60]} - {r['sample_count']} samples")
 
     save_last_run(run_start)
-    print(f"[dim]State saved — next run will fetch APKs uploaded after {run_start.strftime('%Y-%m-%d %H:%M UTC')}[/dim]")
+    print(f"[dim]State saved. The next run fetches APKs uploaded after {run_start.strftime('%Y-%m-%d %H:%M UTC')}[/dim]")
 
     if results:
         try:

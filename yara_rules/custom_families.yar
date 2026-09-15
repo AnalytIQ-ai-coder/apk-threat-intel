@@ -1,11 +1,13 @@
 /*
-    Custom rules based on what we see in previous pipelines
+    Hand-written rules for families we identified in earlier runs of this
+    pipeline. Each one is narrow on purpose: they name a specific campaign
+    rather than a generic behaviour.
 */
 
 rule ZloySync_RU_Banker
 {
     meta:
-        description = "Rosyjski banker z markerem zloy.sync — SMS-grabber celujący w ru-banki"
+        description = "Russian banker carrying the zloy.sync marker - an SMS grabber aimed at RU banks"
         family = "zloy.sync"
         first_seen = "2026-06"
     strings:
@@ -19,7 +21,7 @@ rule ZloySync_RU_Banker
 rule FakeMetaMask_ErmacOcto
 {
     meta:
-        description = "Fałszywe content-providery MetaMask + kanał Pushy — Ermac/Octo kradnące krypto"
+        description = "Fake MetaMask content providers plus a Pushy channel - Ermac/Octo stealing crypto"
         family = "Ermac/Octo (fake MetaMask)"
         first_seen = "2026-07"
     strings:
@@ -33,7 +35,7 @@ rule FakeMetaMask_ErmacOcto
 rule KKAlive_ChineseKeepalive_Banker
 {
     meta:
-        description = "Chiński banker z frameworkiem keep-alive (WeChat backtrace libs + kkalive daemon)"
+        description = "Chinese banker with a keep-alive framework (WeChat backtrace libs plus the kkalive daemon)"
         family = "kkalive keep-alive (PLN Mobile)"
         first_seen = "2026-06"
     strings:
@@ -48,7 +50,7 @@ rule KKAlive_ChineseKeepalive_Banker
 rule USDT_TRC20_Clipper_Overlay
 {
     meta:
-        description = "Fałszywy ekran potwierdzenia przelewu USDT (TRC20) osadzony jako Base64 HTML — crypto-clipper"
+        description = "Fake USDT (TRC20) transfer confirmation screen embedded as Base64 HTML - a crypto clipper"
         family = "USDT clipper overlay"
         first_seen = "2026-06"
     strings:
@@ -63,7 +65,7 @@ rule USDT_TRC20_Clipper_Overlay
 rule Alien_FreeFire_Bangladesh
 {
     meta:
-        description = "Banker Alien podszywający się pod aplikacje Free Fire, operator z Bangladeszu"
+        description = "Alien banker impersonating Free Fire apps, operator based in Bangladesh"
         family = "Alien (BD Free Fire)"
         first_seen = "2026-06"
     strings:
@@ -77,7 +79,7 @@ rule Alien_FreeFire_Bangladesh
 rule RTO_Challan_GithubDeaddrop
 {
     meta:
-        description = "Indyjski banker RTO-Challan z dead-dropem C2 hostowanym na GitHub"
+        description = "Indian RTO-Challan banker with its C2 dead drop hosted on GitHub"
         family = "RTO Challan (uasecurity.org)"
         first_seen = "2026-07"
     strings:

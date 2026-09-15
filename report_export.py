@@ -1,6 +1,7 @@
-"""Eksport wyników runu do formatów gotowych do dalszego użycia:
-CSV (do Excela/SIEM), MISP-owy event JSON (do importu) oraz gotowe
-teksty zgłoszeń nadużyć dla popularnych hostów (GitHub, Discord, Firebase).
+"""Export a run's results into formats that are ready to use elsewhere.
+
+CSV (for Excel or a SIEM), a MISP event JSON (for import) and ready-written
+abuse reports for the hosts that come up most (GitHub, Discord, Firebase).
 """
 import csv
 import json
@@ -10,14 +11,15 @@ from datetime import datetime, timezone
 OUTPUT_DIR = "output"
 
 
-# Wartosci w CSV pochodza z probek (nazwa pakietu, URL-e z DEX). Arkusze
-# traktuja komorke zaczynajaca sie od =, +, -, @, TAB lub CR jako formule,
-# wiec otwarcie raportu w Excelu wykonywaloby kod z analizowanego malware.
+# CSV values come from the samples themselves (package names, URLs out of the
+# DEX). Spreadsheets treat a cell starting with =, +, -, @, TAB or CR as a
+# formula, so opening the report in Excel would execute code from the malware
+# we just analysed.
 _CSV_INJECTION_PREFIXES = ("=", "+", "-", "@", chr(9), chr(13))
 
 
 def csv_safe(value):
-    """Neutralizuje formuly w komorce CSV (CWE-1236)."""
+    """Defuse formulas in a CSV cell (CWE-1236)."""
     if value is None:
         return ""
     text = str(value)
@@ -27,12 +29,13 @@ def csv_safe(value):
 
 
 def _host_of(value: str) -> str:
+    """Strip scheme and path, leaving the bare host."""
     v = value.split("://", 1)[-1]
     return v.split("/", 1)[0]
 
 
 def export_csv(results: list[dict], path: str = None) -> str:
-    """Płaska lista IOC ze wszystkich próbek w bieżącym runie — jeden wiersz na IOC."""
+    """A flat list of IOCs across every sample in this run, one row per IOC."""
     path = path or os.path.join(OUTPUT_DIR, "iocs.csv")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -72,7 +75,7 @@ def export_csv(results: list[dict], path: str = None) -> str:
 
 
 def export_misp_event(results: list[dict], path: str = None) -> str:
-    """Uproszczony event w formacie zgodnym z importem MISP (bez zależności od pymisp)."""
+    """A simplified event in MISP import format, with no pymisp dependency."""
     path = path or os.path.join(OUTPUT_DIR, "misp_event.json")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -103,7 +106,7 @@ def export_misp_event(results: list[dict], path: str = None) -> str:
 
     event = {
         "Event": {
-            "info": f"APK threat-intel batch — {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
+            "info": f"APK threat-intel batch - {datetime.now(timezone.utc).strftime('%Y-%m-%d')}",
             "threat_level_id": "2",
             "analysis": "1",
             "distribution": "0",
@@ -117,7 +120,7 @@ def export_misp_event(results: list[dict], path: str = None) -> str:
     return path
 
 
-# Hosty, dla których generujemy gotowy tekst zgłoszenia z komendy "abuse report"
+# Hosts we can write a ready-made abuse report for
 _ABUSE_TEMPLATES = {
     "github.com": (
         "GitHub repo hosting a dead-drop / C2 resolver for Android malware",
@@ -144,8 +147,10 @@ _ABUSE_TEMPLATES = {
 
 
 def generate_abuse_reports(results: list[dict]) -> list[dict]:
-    """Grupuje dead-dropy/webhooki po hoście i generuje gotowy tekst zgłoszenia
-    z listą hashy próbek, które go nadużywają. Zwraca listę {host, title, body}.
+    """Group dead drops and webhooks by host and write the report for each.
+
+    Each report lists the hashes of the samples abusing that resource. Returns
+    a list of {resource, title, body}.
     """
     by_host: dict[str, dict] = {}
 
@@ -191,13 +196,14 @@ def generate_abuse_reports(results: list[dict]) -> list[dict]:
 
 
 def export_abuse_reports(results: list[dict], path: str = None) -> str:
+    """Write the generated abuse reports to a plain text file."""
     path = path or os.path.join(OUTPUT_DIR, "abuse_reports.txt")
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     reports = generate_abuse_reports(results)
 
     with open(path, "w", encoding="utf-8") as f:
         if not reports:
-            f.write("Brak zasobów nadających się do automatycznego zgłoszenia w tym runie.\n")
+            f.write("No resources in this run qualify for an automatic abuse report.\n")
         for r in reports:
             f.write(f"{'=' * 70}\n{r['title']}\n{'=' * 70}\n{r['body']}\n\n\n")
 
