@@ -1,150 +1,158 @@
 /*
-    Klaster podpisany kluczem "CN=Venom Tools, OU=Software, O=Venom Software,
+    Cluster signed with the key "CN=Venom Tools, OU=Software, O=Venom Software,
     L=New York City, ST=New York, C=US"
-    (SHA-1 936E0ACB069D912BE4FF6D10B5E799460719EBB6, RSA-2048, podpis v2,
-    waznosc 2024-08-22 -> 2052-01-08).
+    (SHA-1 936E0ACB069D912BE4FF6D10B5E799460719EBB6, RSA-2048, v2 signature,
+    valid 2024-08-22 -> 2052-01-08).
 
-    PODSTAWA DOWODOWA: JEDNA PROBKA. To mniej niz przy earth_signer.yar (cztery)
-    i za malo, zeby odroznic odcisk BUILDERA od artefaktu POJEDYNCZEGO BUILDU.
-    Cala struktura ponizej jest tym podyktowana: kotwice sa rozdzielone wedlug
-    tego, jak bardzo ryzykuja, zamiast byc zlepione w jeden warunek.
+    EVIDENCE BASE: ONE SAMPLE. Fewer than earth_signer.yar had (four), and too
+    few to tell a BUILDER fingerprint from an artefact of ONE BUILD. The whole
+    structure below follows from that: the anchors are separated by how much
+    they risk, instead of being fused into a single condition.
 
       2ab4d9d01e2fd395aba7df5f3aec59b4899b0fc5f3295b55cd0d6664b010b285
-      com.sgakagak.agakagabs, etykieta "Chrome", 26/75 na VT, 300 kB, 14 wpisow ZIP
+      com.sgakagak.agakagabs, label "Chrome", 26/75 on VT, 300 kB, 14 ZIP entries
 
-    DLACZEGO PODMIOT CERTYFIKATU JEST TU UZYWANY, A W bsqzx_rentaapps.yar NIE:
-    "Venom Software" to nazwa handlowa sprzedawcy RAT-ow, a pole L wypelnione
-    "New York City" ma wygladac wiarygodnie, nie jest tym, co operator wpisuje
-    sam dla siebie. To sklada sie na DOMYSLNY PODMIOT WPISANY W BUILDER — ta sama
-    sytuacja co "APK Signer/Earth". Konsekwencja: sam podmiot NIE JEST atrybucja
-    do operatora, bo kazdy klient tego samego narzedzia dostanie ten sam napis.
-    Dlatego:
-      * regula na MODUL KLUCZA przypina konkretna pare kluczy -> jeden operator,
-      * regula na PODMIOT z wykluczeniem tego modulu lapie INNEGO klienta tego
-        samego buildera -> sygnal do polowania, nie atrybucja.
+    WHY THE CERTIFICATE SUBJECT IS USED HERE AND NOT IN bsqzx_rentaapps.yar:
+    "Venom Software" is the trade name of a RAT vendor, and an L field filled
+    in with "New York City" is there to look plausible, not something an
+    operator writes for themselves. Together that makes a DEFAULT SUBJECT BAKED
+    INTO THE BUILDER - the same situation as "APK Signer/Earth". The
+    consequence: the subject alone is NOT attribution to an operator, because
+    every customer of the same tool gets the same text. Hence:
+      * the KEY MODULUS rule pins one specific key pair -> one operator,
+      * the SUBJECT rule, excluding that modulus, catches ANOTHER customer of
+        the same builder -> a hunting signal, not attribution.
 
-    ODCISK KODU (zmierzony na tej jednej probce):
-      * manifest deklaruje pakiet "com.sgakagak.agakagabs", ale WSZYSTKIE klasy
-        siedza w "com.nameown12". Rozjazd jest istotny: nazwa pakietu zostala
-        zrandomizowana, a pakiet kodu nie — czyli "nameown12" to najpewniej staly
-        szablon buildera. Najpewniej, bo przy n=1 to nadal hipoteza.
-      * klasy nazwane SLOWAMI KLUCZOWYMI Javy: Lfddo/break;, Lfddo/case;,
+    THE CODE FINGERPRINT (measured on this one sample):
+      * the manifest declares the package "com.sgakagak.agakagabs", but ALL the
+        classes sit in "com.nameown12". The mismatch matters: the package name
+        was randomised and the code package was not, which makes "nameown12"
+        most likely a fixed builder template. Most likely - at n=1 it is still
+        a hypothesis.
+      * classes named after Java KEYWORDS: Lfddo/break;, Lfddo/case;,
         Lfddo/catch;, Lfddo/const;, Lfddo/goto;, Lfddo/new;, Lfddo/super;,
-        Lfddo/this;, Lfddo/try;. W DEX to legalne, w zrodle Javy nie — wiec
-        dekompilator albo wypluje kod, ktorego nie da sie skompilowac, albo sie
-        wywroci. Sam czlon "fddo" moze byc losowany per build, dlatego regula
-        dopasowuje WZORZEC (dowolny krotki pakiet + slowo kluczowe), nie ten napis.
-      * uprawnienia device-admina w res/xml/: wipe-data, reset-password,
-        force-lock, disable-camera, watch-login, expire-password — pelny zestaw
-        lacznie z kasowaniem danych. Do reguly sie NIE nadaje, bo res/xml/*.xml
-        nie trafia do zadnego z dwoch przebiegow skanera (patrz nizej).
-      * accessibility-service z canPerformGestures — synteza dotkniec, czyli
-        zdolnosc klikania za uzytkownika.
+        Lfddo/this;, Lfddo/try;. Legal in DEX, illegal in Java source - so a
+        decompiler either emits code that will not compile or falls over. The
+        "fddo" segment itself may be randomised per build, which is why the
+        rule matches a PATTERN (any short package plus a keyword) rather than
+        that literal text.
+      * device-admin permissions in res/xml/: wipe-data, reset-password,
+        force-lock, disable-camera, watch-login, expire-password - the full set
+        including data wipe. NOT usable in a rule, because res/xml/*.xml
+        reaches neither of the scanner's two passes (see below).
+      * an accessibility-service with canPerformGestures - touch synthesis,
+        i.e. the ability to tap on the user's behalf.
 
-    PRZEBIEGI SKANERA — dlaczego to pieć regul, a nie jedna:
-    yara_scanner skanuje najpierw surowy plik, potem OSOBNO sklejone
-    odkompresowane wpisy (.dex, .arsc, .so, AndroidManifest.xml, assets/).
-    Ciag z jednego przebiegu nie moze stac w warunku razem z ciagiem z drugiego,
-    bo taka galaz nigdy nie strzeli — na tym przewrocil sie pierwszy earth_signer.yar.
-      * DER certyfikatu (blok podpisu v2)         -> przebieg SUROWY,
-      * deskryptory klas z classes.dex            -> przebieg po ZAWARTOSCI,
-      * nazwy wpisow ZIP (lib/.../libvixt.so)     -> przebieg SUROWY.
-    Nazwy "libvixt.so" swiadomie NIE ma w zadnym warunku: przy jednej probce nie
-    da sie odroznic stalej nazwy payloadu od losowanej per build, a rodzina
-    rentaapps z tej samej bazy losuje ja za kazdym razem (libluggage, libdove,
-    libhorror, libsharp...). Zostaje tu jako obserwacja do sprawdzenia przy
-    drugiej probce.
+    SCANNER PASSES - why this is five rules rather than one:
+    yara_scanner scans the raw file first, then SEPARATELY the concatenated
+    decompressed entries (.dex, .arsc, .so, AndroidManifest.xml, assets/).
+    A string from one pass cannot sit in a condition with a string from the
+    other, because such a branch will never fire - that is what the first
+    earth_signer.yar tripped over.
+      * certificate DER (v2 signature block)   -> RAW pass,
+      * class descriptors from classes.dex     -> CONTENT pass,
+      * ZIP entry names (lib/.../libvixt.so)   -> RAW pass.
+    The name "libvixt.so" is deliberately absent from every condition: with one
+    sample there is no telling a fixed payload name from a per-build random
+    one, and the rentaapps family in the same database randomises it every time
+    (libluggage, libdove, libhorror, libsharp...). It stays here as an
+    observation to check against a second sample.
 
-    PODMIENIONA METODA KOMPRESJI MANIFESTU — zmierzone, nie zalozone:
-    AndroidManifest.xml tej probki ma metode kompresji 17180 w central directory
-    i 32040 w naglowku lokalnym. Obie sa nieprawidlowe (ZIP zna 0, 8, 9, 12, 14)
-    i, co samo w sobie mowiace, ROZNE od siebie. Praktyczne skutki sa dwa:
-      * zipfile Pythona rzuca NotImplementedError, wiec _odkompresowana_zawartosc
-        w yara_scanner POMIJA ten wpis — kazda regula opierajaca sie na stringach
-        z manifestu jest na tej probce SLEPA i nikt sie o tym nie dowie, bo
-        wyjatek jest polykany. Dotyczy to m.in. APK_Uprawnienia_O_Nazwach_Od_Cyfry
-        z earth_signer.yar.
-      * androguard ma luzniejszy dekoder i manifest czyta bez problemu, wiec
-        analiza statyczna widzi komplet 30 uprawnien. Rozjazd miedzy tym, co widzi
-        parser, a tym, co widzi skaner regul, jest tu calym sednem techniki.
-    Dlatego $pkg_axml trafia w przebiegu SUROWYM, a nie po zawartosci: strumien
-    manifestu zawiera dlugie literalne fragmenty, wiec napisy UTF-16 leza w pliku
-    otwartym tekstem. To wlasciwosc tego konkretnego pliku, nie regula ogolna —
-    tym, co niesie dopasowanie niezaleznie od manifestu, jest $pkg_dex.
+    THE SWAPPED MANIFEST COMPRESSION METHOD - measured, not assumed:
+    this sample's AndroidManifest.xml declares compression method 17180 in the
+    central directory and 32040 in the local header. Both are invalid (ZIP
+    knows 0, 8, 9, 12, 14) and, tellingly, DIFFERENT from each other. There are
+    two practical consequences:
+      * Python's zipfile raises NotImplementedError, so _decompressed_content
+        in yara_scanner SKIPS that entry - every rule resting on manifest
+        strings is BLIND on this sample and nobody would find out, because the
+        exception is swallowed. That includes
+        APK_Permissions_Named_With_Leading_Digit from earth_signer.yar.
+      * androguard has a more forgiving decoder and reads the manifest without
+        complaint, so static analysis sees all 30 permissions. The gap between
+        what the parser sees and what the rule scanner sees is the entire point
+        of the technique.
+    That is why $pkg_axml matches in the RAW pass rather than the content one:
+    the manifest stream contains long literal runs, so the UTF-16 text sits in
+    the file as plain bytes. That is a property of this particular file, not a
+    general rule - what carries the match independently of the manifest is
+    $pkg_dex.
 */
 
-rule Venom_Tools_Klucz_Operatora
+rule Venom_Tools_Operator_Key
 {
     meta:
-        description = "APK podpisany konkretnym kluczem buildera Venom Software - trojan SMS/accessibility z pelnym device-adminem, podszywa sie pod Chrome"
+        description = "APK signed with one specific Venom Software builder key - an SMS/accessibility trojan with full device admin, posing as Chrome"
         family = "Venom Software"
         cert_sha1 = "936E0ACB069D912BE4FF6D10B5E799460719EBB6"
         cert_subject = "CN=Venom Tools, OU=Software, O=Venom Software, L=New York City"
-        key = "RSA-2048, schemat podpisu v2"
+        key = "RSA-2048, signature scheme v2"
         samples_seen = 1
         vt = "26 / 75"
         first_seen = "2026-09"
     strings:
-        // Fragment modulu RSA (bajty 16-48), tak samo jak w campaign_certs.yar.
-        // Modul jest unikalny dla pary kluczy, wiec przypina operatora,
-        // a nie sam produkt.
+        // RSA modulus slice (bytes 16-48), same approach as campaign_certs.yar.
+        // The modulus is unique to a key pair, so it pins the operator rather
+        // than the product.
         $modulus = { c5 fd 29 98 06 ed 61 3b c4 cf 2e 4a f2 8b 7c ad ec 89 14 f9 68 48 e2 62 2e 8a 8f 1c ea 21 cd 1a }
     condition:
         $modulus
 }
 
-rule Venom_Tools_Builder_Inny_Klucz
+rule Venom_Tools_Builder_Other_Key
 {
     meta:
-        description = "Podmiot certyfikatu Venom Software przy INNYM kluczu niz znany - kolejny klient tego samego buildera, wymaga potwierdzenia"
+        description = "The Venom Software certificate subject with a key OTHER than the known one - another customer of the same builder, needs confirmation"
         family = "Venom Software (hunting)"
-        uwaga = "podmiot jest domyslka narzedzia, wiec dzieli go kazdy klient - przeslanka co do buildera, nie atrybucja operatora"
+        note = "the subject is a tool default, so every customer shares it - a lead about the builder, not attribution of the operator"
         first_seen = "2026-09"
     strings:
-        // Kotwice obejmuja OID atrybutu i naglowek PrintableString, nie sam
-        // napis: dzieki temu trafiaja wylacznie w strukture Name w DER, a nie
-        // w slowo "Venom Tools" lezace gdziekolwiek indziej w pliku.
+        // The anchors cover the attribute OID and the PrintableString header
+        // rather than the text alone, so they land only inside a DER Name
+        // structure and not on the words "Venom Tools" sitting anywhere else
+        // in the file.
         // 06 03 55 04 03 = OID 2.5.4.3 (commonName), 13 0b = PrintableString(11)
         $dn_cn = { 06 03 55 04 03 13 0b 56 65 6e 6f 6d 20 54 6f 6f 6c 73 }
         // 06 03 55 04 0a = OID 2.5.4.10 (organizationName), 13 0e = PrintableString(14)
         $dn_o = { 06 03 55 04 0a 13 0e 56 65 6e 6f 6d 20 53 6f 66 74 77 61 72 65 }
         $modulus = { c5 fd 29 98 06 ed 61 3b c4 cf 2e 4a f2 8b 7c ad ec 89 14 f9 68 48 e2 62 2e 8a 8f 1c ea 21 cd 1a }
     condition:
-        // Oba atrybuty naraz, zeby przypadkowa organizacja o nazwie "Venom
-        // Software" nie wystarczyla. "not $modulus" celowo: probka ze znanym
-        // kluczem ma zostac zlapana przez regule wyzej, a trafienie TUTAJ ma
-        // znaczyc "ten builder, ale nowy klucz - sprawdz recznie".
+        // Both attributes at once, so an unrelated organisation happening to be
+        // called "Venom Software" is not enough. "not $modulus" is deliberate:
+        // a sample with the known key should be caught by the rule above, and a
+        // hit HERE should mean "same builder, new key - check by hand".
         $dn_cn and $dn_o and not $modulus
 }
 
-rule Venom_Tools_Pakiet_Kodu_nameown12
+rule Venom_Tools_Code_Package_nameown12
 {
     meta:
-        description = "Klasy w pakiecie com.nameown12 przy innej nazwie pakietu w manifescie - nieprzemianowany szablon buildera Venom Software"
+        description = "Classes in the com.nameown12 package while the manifest declares a different package - an unrenamed Venom Software builder template"
         family = "Venom Software"
-        uwaga = "hipoteza z jednej probki: nazwa pakietu w manifescie byla zrandomizowana, pakiet kodu nie. Drugie trafienie potwierdzi albo obali."
+        note = "a hypothesis from one sample: the manifest package name was randomised, the code package was not. A second hit will confirm or refute it."
         first_seen = "2026-09"
     strings:
-        // Deskryptor typu z classes.dex.
+        // Type descriptor from classes.dex.
         $pkg_dex = "com/nameown12/" ascii
-        // Ta sama nazwa w puli stringow AndroidManifest.xml - AXML trzyma je
-        // w UTF-16, stad "wide". Manifest tez idzie do przebiegu po zawartosci.
+        // The same name in the AndroidManifest.xml string pool - AXML stores
+        // these in UTF-16, hence "wide". The manifest also goes through the
+        // content pass.
         $pkg_axml = "com.nameown12" wide
     condition:
         any of them
 }
 
-rule Obfuskator_Klasy_O_Nazwach_Slow_Kluczowych
+rule Obfuscator_Classes_Named_After_Keywords
 {
     meta:
-        description = "DEX zawiera klasy nazwane slowami kluczowymi Javy (break, const, goto, catch...) - legalne w bajtkodzie, niekompilowalne w zrodle, wiec lamie dekompilatory"
-        technika = "anti-decompilation / keyword class naming"
-        uwaga = "podstawa dowodowa waska - patrz naglowek pliku. Prog 6 roznych slow ma odsiac pojedyncze przypadkowe trafienie w danych binarnych."
+        description = "DEX contains classes named after Java keywords (break, const, goto, catch...) - legal in bytecode, uncompilable in source, so it breaks decompilers"
+        technique = "anti-decompilation / keyword class naming"
+        note = "narrow evidence base - see the file header. The threshold of 6 distinct keywords is there to filter out a single chance hit in binary data."
         first_seen = "2026-09"
     strings:
-        // Deskryptor typu DEX: "L" + krotki pakiet + "/" + slowo kluczowe + ";".
-        // Pakiet jest wzorcem, nie stalym napisem, bo czlon "fddo" z jedynej
-        // znanej probki moze byc losowany per build.
+        // DEX type descriptor: "L" + short package + "/" + keyword + ";".
+        // The package is a pattern rather than fixed text, because the "fddo"
+        // segment from the only known sample may be randomised per build.
         $kw_break = /L[a-z]{2,10}\/break;/ ascii
         $kw_case = /L[a-z]{2,10}\/case;/ ascii
         $kw_catch = /L[a-z]{2,10}\/catch;/ ascii
@@ -158,31 +166,32 @@ rule Obfuskator_Klasy_O_Nazwach_Slow_Kluczowych
         $kw_this = /L[a-z]{2,10}\/this;/ ascii
         $kw_try = /L[a-z]{2,10}\/try;/ ascii
     condition:
-        // Dziala w przebiegu po ODKOMPRESOWANEJ zawartosci - classes.dex jest
-        // zdeflatowany, wiec w przebiegu po surowym pliku tych ciagow nie ma.
+        // Works in the DECOMPRESSED-content pass - classes.dex is deflated, so
+        // the raw-file pass does not contain these strings.
         6 of them
 }
 
-rule APK_Manifest_Podmieniona_Metoda_Kompresji
+rule APK_Manifest_Swapped_Compression_Method
 {
     meta:
-        description = "AndroidManifest.xml zadeklarowany z nieprawidlowa metoda kompresji ZIP - Android go otworzy, standardowe narzedzia analityczne nie"
-        technika = "ZIP compression method confusion"
-        uwaga = "wykryte przy probce Venom (metoda 17180 w central directory, 32040 w naglowku lokalnym). 1 probka pozytywna, 6 negatywnych."
-        skutek = "yara_scanner polyka NotImplementedError i pomija manifest, wiec reguly na stringi z manifestu cicho nie strzelaja"
+        description = "AndroidManifest.xml declared with an invalid ZIP compression method - Android opens it, standard analysis tooling does not"
+        technique = "ZIP compression method confusion"
+        note = "found on the Venom sample (method 17180 in the central directory, 32040 in the local header). 1 positive sample, 6 negative."
+        effect = "yara_scanner swallows the NotImplementedError and skips the manifest, so rules on manifest strings quietly fail to fire"
         first_seen = "2026-09"
     strings:
-        // Naglowek lokalny wpisu ZIP, po ktorym od razu idzie nazwa pliku:
-        // sygnatura(4) wersja(2) flagi(2) metoda(2) czas(2) data(2) crc(4)
-        // csize(4) usize(4) dlnazwy(2) dlextra(2) = nazwa na offsecie 30.
-        // Stad [26] miedzy sygnatura a nazwa.
+        // ZIP local file header, immediately followed by the file name:
+        // signature(4) version(2) flags(2) method(2) time(2) date(2) crc(4)
+        // csize(4) usize(4) namelen(2) extralen(2) = name at offset 30.
+        // Hence the [26] between signature and name.
         $lfh_manifest = { 50 4b 03 04 [26] 41 6e 64 72 6f 69 64 4d 61 6e 69 66 65 73 74 2e 78 6d 6c }
     condition:
-        // Konkretnej wartosci NIE zaszywamy - przy jednej probce nie wiadomo,
-        // czy builder ja losuje. Zamiast tego czytamy pole metody wprost
-        // (offset +8 od sygnatury) i odrzucamy dwie jedyne, ktore w APK maja
-        // sens: 0 (STORED) i 8 (DEFLATE). Reszta to albo unik, albo plik
-        // uszkodzony - jedno i drugie warte spojrzenia.
+        // The specific value is deliberately NOT pinned - with one sample
+        // there is no telling whether the builder randomises it. Instead we
+        // read the method field directly (offset +8 from the signature) and
+        // reject the only two that make sense in an APK: 0 (STORED) and
+        // 8 (DEFLATE). Anything else is either evasion or a damaged file, and
+        // both are worth a look.
         for any i in (1..#lfh_manifest) : (
             uint16(@lfh_manifest[i] + 8) != 0 and uint16(@lfh_manifest[i] + 8) != 8
         )

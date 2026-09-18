@@ -1,6 +1,6 @@
-"""Local web dashboard
+"""Local web dashboard over the threat-intel database.
 
-Running:  python dashboard.py  (defualt http://localhost:5001)
+Run with:  python dashboard.py  (defaults to http://localhost:5001)
 """
 from urllib.parse import quote
 
@@ -13,17 +13,18 @@ app = Flask(__name__)
 
 
 def h(value) -> str:
-    """Escapuje wartosc do wstawienia w tresc HTML.
+    """Escape a value for insertion into HTML body text.
 
-    Wszystko, co trafia do bazy, pochodzi z analizowanych probek: app_name,
-    package, filename, cert_subject i wartosci IOC sa kontrolowane przez autora
-    APK. Bez tego zlosliwa nazwa aplikacji wykonuje sie jako JS w tym dashboardzie.
+    Everything in the database came out of an analysed sample: app_name,
+    package, filename, cert_subject and the IOC values are all controlled by
+    whoever wrote the APK. Without this, a malicious app label runs as JS in
+    this dashboard.
     """
     return str(escape("" if value is None else str(value)))
 
 
 def u(value) -> str:
-    """Escapuje wartosc do wstawienia w URL (href)."""
+    """Escape a value for insertion into a URL (href)."""
     return quote(str(value or ""), safe="")
 
 _LAYOUT = """
@@ -62,8 +63,8 @@ _LAYOUT = """
 </head>
 <body>
 <nav>
-  <a href="/">Przegląd</a>
-  <a href="/search">Szukaj IOC</a>
+  <a href="/">Overview</a>
+  <a href="/search">Search IOCs</a>
 </nav>
 {{ content|safe }}
 </body>
@@ -82,12 +83,12 @@ def index():
     reused = threat_db.top_reused_iocs(limit=15)
 
     stats_html = f"""
-    <h1>Przegląd</h1>
+    <h1>Overview</h1>
     <div class="stats">
-      <div class="stat-card"><div class="num">{stats['samples']}</div><div class="label">Próbek</div></div>
-      <div class="stat-card"><div class="num">{stats['unique_iocs']}</div><div class="label">Unikalnych IOC</div></div>
-      <div class="stat-card"><div class="num">{stats['unique_certs']}</div><div class="label">Certów</div></div>
-      <div class="stat-card"><div class="num">{stats['duplicates_skipped']}</div><div class="label">Duplikatów pominiętych</div></div>
+      <div class="stat-card"><div class="num">{stats['samples']}</div><div class="label">Samples</div></div>
+      <div class="stat-card"><div class="num">{stats['unique_iocs']}</div><div class="label">Unique IOCs</div></div>
+      <div class="stat-card"><div class="num">{stats['unique_certs']}</div><div class="label">Certificates</div></div>
+      <div class="stat-card"><div class="num">{stats['duplicates_skipped']}</div><div class="label">Duplicates skipped</div></div>
     </div>
     """
 
@@ -102,10 +103,10 @@ def index():
         for s in samples
     )
     samples_html = f"""
-    <h1>Ostatnie próbki</h1>
+    <h1>Recent samples</h1>
     <table>
-      <tr><th>Plik</th><th>Pakiet</th><th>AI risk</th><th>VT</th><th>Rodzina</th><th>Zapisano</th></tr>
-      {rows or '<tr><td colspan=6>Brak danych — uruchom analyzer.py.</td></tr>'}
+      <tr><th>File</th><th>Package</th><th>AI risk</th><th>VT</th><th>Family</th><th>First seen</th></tr>
+      {rows or '<tr><td colspan=6>No data yet - run analyzer.py.</td></tr>'}
     </table>
     """
 
@@ -116,10 +117,10 @@ def index():
         for r in reused
     )
     reused_html = f"""
-    <h1>Najczęściej powtarzające się IOC</h1>
+    <h1>Most reused IOCs</h1>
     <table>
-      <tr><th>Typ</th><th>Wartość</th><th>Liczba próbek</th></tr>
-      {reused_rows or '<tr><td colspan=3>Brak powtórzeń.</td></tr>'}
+      <tr><th>Type</th><th>Value</th><th>Samples</th></tr>
+      {reused_rows or '<tr><td colspan=3>No repeats yet.</td></tr>'}
     </table>
     """
 
@@ -130,7 +131,7 @@ def index():
 def sample_detail(sha256):
     sample = threat_db.get_sample(sha256)
     if not sample:
-        return _render(f"<h1>Nie znaleziono próbki {h(sha256)}</h1>"), 404
+        return _render(f"<h1>No sample found for {h(sha256)}</h1>"), 404
 
     iocs = threat_db.get_iocs_for_sample(sha256)
     ioc_rows = "".join(
@@ -145,10 +146,10 @@ def sample_detail(sha256):
     content = f"""
     <h1>{h(sample.get('filename') or sha256)}</h1>
     <table>{fields_html}</table>
-    <h1>IOC ({len(iocs)})</h1>
+    <h1>IOCs ({len(iocs)})</h1>
     <table>
-      <tr><th>Typ</th><th>Wartość</th></tr>
-      {ioc_rows or '<tr><td colspan=2>Brak IOC.</td></tr>'}
+      <tr><th>Type</th><th>Value</th></tr>
+      {ioc_rows or '<tr><td colspan=2>No IOCs recorded.</td></tr>'}
     </table>
     """
     return _render(content)
@@ -160,10 +161,10 @@ def search():
     results = threat_db.search_ioc(q) if q else []
 
     form = f"""
-    <h1>Szukaj IOC</h1>
+    <h1>Search IOCs</h1>
     <form class="search" method="get" action="/search">
-      <input type="text" name="q" placeholder="np. fragment domeny, adresu portfela, URL..." value="{h(q)}">
-      <button type="submit">Szukaj</button>
+      <input type="text" name="q" placeholder="part of a domain, wallet address, URL..." value="{h(q)}">
+      <button type="submit">Search</button>
     </form>
     """
 
@@ -175,8 +176,8 @@ def search():
     )
     results_html = f"""
     <table>
-      <tr><th>Typ</th><th>Wartość</th><th>Próbka</th><th>Pakiet</th></tr>
-      {rows or ('<tr><td colspan=4>Brak wyników.</td></tr>' if q else '<tr><td colspan=4>Wpisz frazę powyżej.</td></tr>')}
+      <tr><th>Type</th><th>Value</th><th>Sample</th><th>Package</th></tr>
+      {rows or ('<tr><td colspan=4>No matches.</td></tr>' if q else '<tr><td colspan=4>Type a term above.</td></tr>')}
     </table>
     """
     return _render(form + results_html)

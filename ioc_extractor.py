@@ -1,15 +1,15 @@
-"""Ekstrakcja IOC wykraczających poza to, co łapie dex_analyzer.
+"""IOC extraction beyond what dex_analyzer already catches.
 
-Skupia się na tym, co ręcznie wyłuskiwaliśmy z raportów: portfele krypto
-(cel clipperów), kontakty operatorów (Telegram/WhatsApp), webhooki Discord
-(kanały eksfiltracji) i "dead-dropy" hostowane na GitHub/Firebase/Pages,
-z których malware pobiera świeży adres C2.
+Focused on what we used to dig out of reports by hand: crypto wallets (what
+clippers go after), operator contacts (Telegram/WhatsApp), Discord webhooks
+(exfiltration channels) and "dead drops" hosted on GitHub/Firebase/Pages, from
+which malware fetches a fresh C2 address.
 """
 import hashlib
 import re
 
-# Ta sama, zabezpieczona przed zip bombą ekstrakcja co w analizie DEX —
-# nie duplikujemy jej tutaj drugi raz.
+# Same zip-bomb-guarded extraction as the DEX analysis uses; no reason to have
+# a second copy of it here.
 from dex_analyzer import _extract_dex_strings, _extract_native_strings
 
 _BTC_RE = re.compile(r'\b(?:bc1[a-z0-9]{25,60}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b')
@@ -22,46 +22,46 @@ _DISCORD_WEBHOOK_RE = re.compile(
     r'discord(?:app)?\.com/api/webhooks/\d{15,25}/[A-Za-z0-9_\-]{50,90}'
 )
 
-# "Dead-drop" resolvery — malware pobiera stamtąd aktualny adres C2, więc
-# host sam w sobie jest IOC nadającym się do zgłoszenia (np. GitHub abuse).
-# Dead-drop to zasob, ktory malware POBIERA: raw.githubusercontent.com albo
-# github.com/.../raw/... . Sciezka /blob/ to podglad w przegladarce (HTML),
-# wiec lapala wylacznie linki z komunikatow bledow bibliotek (gson, FastAdapter).
+# Dead-drop resolvers: malware fetches its current C2 address from these, so
+# the host is itself a reportable IOC (GitHub abuse, for instance).
+# A dead drop is a resource malware DOWNLOADS: raw.githubusercontent.com or
+# github.com/.../raw/... . A /blob/ path is the browser preview (HTML), so it
+# only ever matched links from library error messages (gson, FastAdapter).
 _GITHUB_RAW_RE = re.compile(
     r"(?:raw\.githubusercontent\.com/[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}/"
     r"|github\.com/[A-Za-z0-9_.-]{1,39}/[A-Za-z0-9_.-]{1,100}/raw/)"
     r"[A-Za-z0-9/._~:?#@!$&()*+,;=%-]{1,200}"
 )
-# Bitbucket dziala tu tak samo jak GitHub: publiczne repo, darmowe konto,
-# a plik pod /raw/ zwracany jest jako czysta tresc. Probki com.co.xb (NewPay)
-# i com.safe.xp (XPay) trzymaja tam liste aktualnych domen C2
-# (bitbucket.org/xpay2050/xinbipay/raw/main/domain.json), z kopia zapasowa
-# na storage obiektowym. Wczesniej trafialo to do bazy jako zwykly URL.
+# Bitbucket works exactly like GitHub here: public repo, free account, and a
+# file under /raw/ served as plain content. The com.co.xb (NewPay) and
+# com.safe.xp (XPay) samples keep their current C2 domain list there
+# (bitbucket.org/xpay2050/xinbipay/raw/main/domain.json), with a backup on
+# object storage. This used to land in the database as an ordinary URL.
 #
-# Wymog "/raw/" jest tu tym, czym wykluczenie "/blob/" przy GitHubie: bez
-# niego regula zabralaby bitbucket.org/loganchien/clang i .../llvm, czyli
-# linki do zrodel toolchaina LLVM z komunikatow bibliotek. Pomiar na bazie
-# 12697 unikalnych IOC: 2 trafienia, oba prawdziwe, zero falszywek.
+# Requiring "/raw/" does the same job as excluding "/blob/" does for GitHub:
+# without it the rule would take bitbucket.org/loganchien/clang and .../llvm,
+# which are LLVM toolchain source links out of library messages. Measured over
+# 12697 unique IOCs: 2 hits, both real, zero false positives.
 #
-# Forma /downloads/ (hosting plikow wydania) NIE jest tu ujeta swiadomie —
-# nie mamy na nia ani jednej probki, a bez pomiaru groziloby to falszywkami
-# z legalnych linkow do bibliotek.
+# The /downloads/ form (release file hosting) is deliberately NOT covered - we
+# have no sample using it, and adding it unmeasured would risk false positives
+# from legitimate library links.
 _BITBUCKET_RAW_RE = re.compile(
     r"(?:bitbucket\.org/[A-Za-z0-9_.-]{1,62}/[A-Za-z0-9_.-]{1,62}/raw/"
-    # Odpowiednik raw.githubusercontent.com po stronie Bitbucketa. Dodane przez
-    # analogie do reguly GitHuba, nie na podstawie pomiaru — ta sciezka nie ma
-    # innego zastosowania niz pobranie surowej tresci pliku.
+    # Bitbucket's equivalent of raw.githubusercontent.com. Added by analogy
+    # with the GitHub rule rather than from measurement - this path has no use
+    # other than fetching a file's raw content.
     r"|api\.bitbucket\.org/2\.0/repositories/[A-Za-z0-9_.-]{1,62}/[A-Za-z0-9_.-]{1,62}/src/)"
     r"[A-Za-z0-9/._~:?#@!$&()*+,;=%-]{1,200}"
 )
 _FIREBASE_RTDB_RE = re.compile(r'[a-z0-9\-]{3,50}-default-rtdb\.firebaseio\.com')
 _PAGES_DEV_RE = re.compile(r'[a-z0-9\-]{3,50}\.pages\.dev')
-# Cloudflare Workers to ta sama klasa darmowej infrastruktury przekazujacej co
-# Pages: konto zaklada sie w minute, subdomena jest za darmo, a ruch wychodzi
-# z adresow Cloudflare. W bazie mielismy 9 takich hostow (m.in.
-# sync.softwaremirror.workers.dev z probki wykrytej przez 30/75 silnikow)
-# i zaden nie byl klasyfikowany jako dead-drop.
-# Adres ma postac [<worker>.]<konto>.workers.dev — pierwszy czlon bywa pominiety.
+# Cloudflare Workers is the same class of free relay infrastructure as Pages:
+# an account takes a minute to open, the subdomain is free, and traffic leaves
+# from Cloudflare addresses. The database held 9 such hosts (among them
+# sync.softwaremirror.workers.dev, from a sample 30 of 75 engines flagged) and
+# not one was classified as a dead drop.
+# The form is [<worker>.]<account>.workers.dev; the first part is optional.
 _WORKERS_DEV_RE = re.compile(
     r"(?:[a-z0-9\-]{1,63}\.)?[a-z0-9\-]{3,50}\.workers\.dev"
 )
@@ -71,10 +71,10 @@ _WALLET_BLACKLIST_SUBSTR = (
 )
 
 
-# Standardowe deep-linki obecne w KAZDYM kliencie Telegrama i jego forkach.
-# Bez tego kazdy fork trafial do bazy z kilkunastoma "kontaktami operatora",
-# ktore sa zwyklymi elementami interfejsu aplikacji.
-_TELEGRAM_STANDARDOWE = {
+# Standard deep links present in EVERY Telegram client and its forks. Without
+# this, each fork landed in the database with a dozen "operator contacts" that
+# are really just parts of the app's own UI.
+_TELEGRAM_STANDARD_LINKS = {
     "botfather", "addstickers", "addemoji", "addstyle", "addtheme", "addlist",
     "joinchat", "proxy", "socks", "spambot", "premiumbot", "giftcode",
     "stickers", "boost", "call", "folder", "nasettings", "share", "setlanguage",
@@ -82,30 +82,31 @@ _TELEGRAM_STANDARDOWE = {
 }
 
 
-def _telegram_standardowy(link: str) -> bool:
-    return link.split("/", 1)[-1].lower() in _TELEGRAM_STANDARDOWE
+def _is_standard_telegram_link(link: str) -> bool:
+    """Is this a built-in Telegram deep link rather than an operator contact?"""
+    return link.split("/", 1)[-1].lower() in _TELEGRAM_STANDARD_LINKS
 
 
 def _looks_like_junk_wallet(addr: str) -> bool:
     return any(sub in addr for sub in _WALLET_BLACKLIST_SUBSTR)
 
 
-# ── Walidacja adresów portfeli ────────────────────────────────────────────────
-# Sam regex łapie stanowczo za dużo: 32-znakowy hash hex zaczynający się od "1"
-# albo "3" (np. MD5 zapisany w string poolu) pasuje do wzorca adresu legacy,
-# bo alfabet Base58 pokrywa się z hex poza znakami 0/O/I/l. Bez weryfikacji
-# sumy kontrolnej takie śmieci trafiały do iocs.csv i zgłoszeń abuse.
+# ── Wallet address validation ────────────────────────────────────────────────
+# The regex alone catches far too much: a 32-character hex hash starting with
+# "1" or "3" (an MD5 sitting in the string pool, say) fits the legacy address
+# pattern, because the Base58 alphabet overlaps hex everywhere except 0/O/I/l.
+# Without a checksum check that junk ended up in iocs.csv and in abuse reports.
 
 _B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _B58_INDEX = {c: i for i, c in enumerate(_B58_ALPHABET)}
 
 
 def _b58check_decode(addr: str) -> bytes | None:
-    """Dekoduje Base58Check i sprawdza sumę kontrolną.
+    """Decode Base58Check and verify the checksum.
 
-    Zwraca payload (bajt wersji + 20-bajtowy hash) albo None, jeśli adres jest
-    nieprawidłowy. Checksum to pierwsze 4 bajty sha256(sha256(payload)), więc
-    szansa przypadkowego trafienia to ~1/2^32.
+    Returns the payload (version byte plus 20-byte hash), or None if the
+    address is invalid. The checksum is the first 4 bytes of
+    sha256(sha256(payload)), so a chance hit runs at about 1 in 2^32.
     """
     num = 0
     for ch in addr:
@@ -115,8 +116,8 @@ def _b58check_decode(addr: str) -> bytes | None:
         num = num * 58 + idx
 
     body = num.to_bytes((num.bit_length() + 7) // 8, "big") if num else b""
-    leading_zeros = len(addr) - len(addr.lstrip("1"))  # wiodące "1" to bajty 0x00
-    raw = bytes(leading_zeros) + body  # wiodace 1 -> bajty 0x00
+    leading_zeros = len(addr) - len(addr.lstrip("1"))  # leading "1"s are 0x00 bytes
+    raw = bytes(leading_zeros) + body
 
     if len(raw) != 25:
         return None
@@ -149,7 +150,7 @@ def _bech32_hrp_expand(hrp: str) -> list[int]:
 
 
 def _is_valid_btc_bech32(addr: str) -> bool:
-    """Adresy segwit (bc1...) — bech32 dla v0, bech32m dla v1+ (taproot)."""
+    """Segwit addresses (bc1...): bech32 for v0, bech32m for v1+ (taproot)."""
     a = addr.lower()
     if not a.startswith("bc1") or not (14 <= len(a) <= 74):
         return False
@@ -179,13 +180,13 @@ def _is_valid_btc(addr: str) -> bool:
 
 
 def _is_valid_tron(addr: str) -> bool:
-    """TRON używa tego samego Base58Check, z bajtem wersji 0x41."""
+    """TRON uses the same Base58Check, with version byte 0x41."""
     payload = _b58check_decode(addr)
     return payload is not None and payload[0] == 0x41
 
 
 def extract_iocs(apk_path: str) -> dict:
-    """Zwraca portfele krypto, kontakty operatorów i dead-dropy znalezione w DEX."""
+    """Return crypto wallets, operator contacts and dead drops found in the DEX."""
     try:
         with open(apk_path, "rb") as f:
             apk_bytes = f.read()
@@ -197,11 +198,11 @@ def extract_iocs(apk_path: str) -> dict:
 
     btc = {m for m in _BTC_RE.findall(text) if _is_valid_btc(m)}
     tron = {m for m in _TRON_RE.findall(text) if _is_valid_tron(m)}
-    # ETH nie ma obowiązkowej sumy kontrolnej (EIP-55 działa tylko dla adresów
-    # pisanych mieszaną wielkością liter), więc zostaje filtr na oczywiste atrapy.
+    # ETH has no mandatory checksum (EIP-55 only applies to mixed-case
+    # addresses), so all that is left is a filter for obvious placeholders.
     eth = {m for m in _ETH_RE.findall(text) if not _looks_like_junk_wallet(m)}
 
-    telegram = {m for m in _TELEGRAM_RE.findall(text) if not _telegram_standardowy(m)}
+    telegram = {m for m in _TELEGRAM_RE.findall(text) if not _is_standard_telegram_link(m)}
     whatsapp = {m for m in _WHATSAPP_RE.findall(text)}
     discord_webhooks = {m for m in _DISCORD_WEBHOOK_RE.findall(text)}
 
@@ -247,11 +248,11 @@ def has_any_ioc(iocs: dict) -> bool:
 
 
 def extract_iocs_isolated(apk_path: str, timeout: int = 90) -> dict:
-    """extract_iocs uruchomione w osobnym procesie — patrz analyze_dex_isolated."""
+    """extract_iocs in a child process - see analyze_dex_isolated."""
     from isolation import run_isolated, IsolationTimeout, IsolationError
     try:
         return run_isolated(extract_iocs, (apk_path,), timeout=timeout)
     except IsolationTimeout as e:
-        return {"error": f"ekstrakcja IOC przerwana: {e}"}
+        return {"error": f"IOC extraction aborted: {e}"}
     except IsolationError as e:
-        return {"error": f"ekstrakcja IOC nie powiodla sie: {str(e).splitlines()[-1]}"}
+        return {"error": f"IOC extraction failed: {str(e).splitlines()[-1]}"}

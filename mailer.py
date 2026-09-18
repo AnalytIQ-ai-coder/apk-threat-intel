@@ -8,7 +8,7 @@ from report_export import csv_safe
 
 
 def _build_body(results: list[dict]) -> str:
-    lines = [f"Przeanalizowano {len(results)} plik(ów) APK.\n"]
+    lines = [f"Analysed {len(results)} APK file(s).\n"]
     for r in results:
         vt = r.get("vt") or {}
         ai = r.get("ai") or {}

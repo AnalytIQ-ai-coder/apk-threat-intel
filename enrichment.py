@@ -1,3 +1,8 @@
+"""Cross-check hashes and IOCs against the abuse.ch feeds.
+
+Every lookup fails soft: a feed being down or rate-limited should never take
+the run with it, so errors come back in the result dict instead of raising.
+"""
 import requests
 
 from config import ABUSECH_API_KEY
@@ -11,7 +16,7 @@ _URLHAUS_URL = "https://urlhaus-api.abuse.ch/v1/url/"
 
 
 def check_malwarebazaar(sha256: str) -> dict:
-    
+    """Look the sample hash up in MalwareBazaar."""
     try:
         r = requests.post(
             _MALWAREBAZAAR_URL, data={"query": "get_info", "hash": sha256},
@@ -33,6 +38,7 @@ def check_malwarebazaar(sha256: str) -> dict:
 
 
 def check_threatfox_ioc(value: str) -> dict:
+    """Look a single IOC (IP, domain, URL) up in ThreatFox."""
     try:
         r = requests.post(
             _THREATFOX_URL, json={"query": "search_ioc", "search_term": value},
@@ -58,6 +64,7 @@ def check_threatfox_ioc(value: str) -> dict:
 
 
 def check_urlhaus(url: str) -> dict:
+    """Look a URL up in URLhaus."""
     try:
         r = requests.post(_URLHAUS_URL, data={"url": url}, headers=_HEADERS, timeout=_TIMEOUT)
         j = r.json()
@@ -74,7 +81,11 @@ def check_urlhaus(url: str) -> dict:
 
 
 def enrich(data: dict, iocs: dict) -> dict:
+    """Run the sample and its top IOCs past all three feeds.
 
+    Candidates are capped on purpose — these are shared community endpoints
+    and one APK can easily yield hundreds of domains.
+    """
     result = {"malwarebazaar": None, "threatfox_hits": [], "urlhaus_hits": []}
 
     sha256 = data.get("sha256")

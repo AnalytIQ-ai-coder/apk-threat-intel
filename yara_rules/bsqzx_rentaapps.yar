@@ -1,36 +1,35 @@
 /*
-    Kampania "rentaapps" / System_Upgrade — dropper z C2 pod bsqzx.xyz.
+    The "rentaapps" / System_Upgrade campaign - a dropper with C2 at bsqzx.xyz.
 
-    13 probek, 12 roznych nazw pakietu (ghy.<trzy litery>.rentaapps),
-    wszystkie o nazwie aplikacji "System_Upgrade", VT 8-18/75, etykieta
-    "dropper". Kazda probka ma DOKLADNIE JEDNA biblioteke natywna o entropii
-    ~7.996 (czyli zaszyfrowana, nie tylko spakowana) pod losowa nazwa:
-    libearth.so, libflag.so, libempty.so, libbench.so, libbot.so...
-    Randomizacja nazwy pliku jest tu swiadomym unikiem, wiec regula NIE moze
-    sie o nia opierac.
+    13 samples, 12 distinct package names (ghy.<three letters>.rentaapps), all
+    with the app label "System_Upgrade", VT 8-18/75, tagged "dropper". Every
+    sample carries EXACTLY ONE native library at entropy ~7.996 (encrypted, not
+    merely packed) under a random name: libearth.so, libflag.so, libempty.so,
+    libbench.so, libbot.so... Randomising that filename is a deliberate evasion,
+    so the rule must NOT rest on it.
 
-    DLACZEGO NIE PO KLUCZU PODPISUJACYM (inaczej niz campaign_certs.yar):
-    caly klaster jest podpisany kluczem testowym AOSP
-    (SHA-1 27196E386B875E76ADF700E7EA84E4C6EEE33DFA). Ten klucz jest PUBLICZNY
-    — lezy w drzewie zrodel Androida i uzywa go kazdy, kto buduje z testkey.
-    W naszej wlasnej bazie ten sam klucz maja cztery niepowiazane rodziny
+    WHY NOT THE SIGNING KEY (unlike campaign_certs.yar): the whole cluster is
+    signed with the AOSP test key
+    (SHA-1 27196E386B875E76ADF700E7EA84E4C6EEE33DFA). That key is PUBLIC - it
+    sits in the Android source tree and everyone building with testkey uses it.
+    In our own database four unrelated families carry the same key
     (com.liquidity.sweeps.core, DIXMAX TV, net.nccjus.kedkgbv, teuq.lbnn.zzo),
-    czyli 5 z 18 probek to NIE jest ta kampania. Kotwica na module RSA dalaby
-    tu bledna atrybucje i trafiala w dowolny build testowy Androida.
+    so 5 of 18 samples are NOT this campaign. An RSA-modulus anchor here would
+    misattribute and fire on any test build of Android.
 
-    Kotwiczymy wiec na C2 i na odcisku buildera.
+    So we anchor on the C2 and on the builder fingerprint instead.
 */
 
 rule Rentaapps_C2_bsqzx
 {
     meta:
-        description = "Dropper 'System_Upgrade' z rodziny rentaapps — C2 bsqzx.xyz, pakiet ghy.<xxx>.rentaapps, jedna zaszyfrowana biblioteka natywna o losowej nazwie"
+        description = "'System_Upgrade' dropper from the rentaapps family - C2 bsqzx.xyz, package ghy.<xxx>.rentaapps, one encrypted native library under a random name"
         family = "rentaapps / bsqzx.xyz"
         c2 = "bsqzx.xyz"
         samples_seen = 13
         distinct_packages = 12
         vt_range = "8-18 / 75"
-        cert_note = "klucz testowy AOSP 27196E386B875E76 — WSPOLDZIELONY, nie nadaje sie na kotwice"
+        cert_note = "AOSP test key 27196E386B875E76 - SHARED, unusable as an anchor"
         first_seen = "2026-09"
     strings:
         $c2      = "bsqzx.xyz" ascii
@@ -39,17 +38,17 @@ rule Rentaapps_C2_bsqzx
         $prov_l  = "Lcom/launcher/mango/LauncherProvider" ascii
         $label   = "System_Upgrade" ascii
     condition:
-        // Wylacznie znane C2. Domena nie wystepuje nigdzie poza ta kampania,
-        // wiec samo jej trafienie jest wystarczajaca przeslanka.
-        // Odcisk buildera bez C2 obsluguje ODDZIELNA regula ponizej — gdyby
-        // byl tu jako galaz OR, tamta nigdy by nie strzelila.
+        // The known C2 only. The domain appears nowhere outside this campaign,
+        // so hitting it is sufficient grounds on its own.
+        // The builder fingerprint without a C2 is handled by the SEPARATE rule
+        // below - as an OR branch here it would never fire.
         $c2 and any of ($pkg_dot, $prov, $prov_l, $label)
 }
 
-rule Rentaapps_Builder_Nowa_Domena
+rule Rentaapps_Builder_New_Domain
 {
     meta:
-        description = "Sam odcisk buildera rentaapps bez znanego C2 — prawdopodobna nowa fala z rotowana domena"
+        description = "The rentaapps builder fingerprint with no known C2 - likely a new wave on a rotated domain"
         family = "rentaapps (builder)"
         samples_seen = 13
         first_seen = "2026-09"
@@ -60,7 +59,7 @@ rule Rentaapps_Builder_Nowa_Domena
         $prov_l  = "Lcom/launcher/mango" ascii
         $c2      = "bsqzx.xyz" ascii
     condition:
-        // Celowo "not $c2": ta regula ma lapac wylacznie to, czego pierwsza
-        // juz nie zlapala, zeby trafienie znaczylo "nowa domena, sprawdz ja".
+        // "not $c2" is deliberate: this rule should only catch what the first
+        // one did not, so that a hit here means "new domain, go look at it".
         not $c2 and $pkg_dot and $label and any of ($prov, $prov_l)
 }
