@@ -160,6 +160,7 @@ Opens at http://localhost:5001 — overview stats, recent samples, most-reused I
 ├── clean_iocs.py        # One-off: purge IOCs stored before the validators existed
 ├── backfill_certs.py    # One-off: backfill certificates for pre-v2/v3 rows
 ├── backfill_splits.py   # One-off: mark App Bundle splits among older rows
+├── backfill_ai.py       # One-off: rate samples a run left unrated (Ollama was down)
 ├── extract_anchors.py   # One-off: derive YARA anchors from a campaign certificate
 ├── .env.example         # Example credentials
 └── requirements.txt

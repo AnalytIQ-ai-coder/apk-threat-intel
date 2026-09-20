@@ -163,6 +163,10 @@ def print_result(data: dict):
     if ai:
         if ai.get("error"):
             ai_str = f"[red]Error: {ai['error']}[/red]"
+        elif ai.get("skipped"):
+            # Not a rating - the step never ran. Rendering this as UNKNOWN made
+            # it look like the model had failed or was unreachable.
+            ai_str = f"[dim]not assessed - {ai['skipped']}[/dim]"
         else:
             risk = ai.get("risk", "unknown")
             reason = ai.get("reason", "")
@@ -347,6 +351,7 @@ def main():
     print(f"[green][+] Found {len(files)} new file(s)[/green]")
 
     results = []
+    mobsf_failures = []  # samples whose MobSF step failed this run
 
     for obj in files:
         sha256 = getattr(obj, "sha256", "?")
@@ -401,6 +406,15 @@ def main():
             if MOBSF_API_KEY:
                 print(f"[dim][~] MobSF analysis...[/dim]")
                 data["mobsf"] = mobsf_analyze(apk_path, dynamic=MOBSF_DYNAMIC)
+                if data["mobsf"].get("error"):
+                    # Only the first failure is worth a message - when MobSF is
+                    # down every sample fails the same way and 100+ identical red
+                    # lines bury everything else. The tally at the end of the run
+                    # is what tells you how much was missed.
+                    if not mobsf_failures:
+                        print(f"[yellow][!] MobSF unavailable: {data['mobsf']['error'][:160]}[/yellow]")
+                        print("[yellow]    Continuing without it; further failures are counted, not printed.[/yellow]")
+                    mobsf_failures.append(sha256)
 
             if split_has_no_code(data):
                 # There is no point sending a config split to the model: no
@@ -440,6 +454,12 @@ def main():
         json.dump(results, f, indent=2, ensure_ascii=False)
 
     print(f"\n[bold green][+] Done. {len(results)}/{len(files)} processed. Results saved to {output_path}[/bold green]")
+
+    if mobsf_failures:
+        print(
+            f"[yellow][!] MobSF failed for {len(mobsf_failures)}/{len(results)} sample(s) - "
+            f"those rows carry static analysis only.[/yellow]"
+        )
 
     if results:
         csv_path = report_export.export_csv(results)

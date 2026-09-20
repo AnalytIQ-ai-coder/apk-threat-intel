@@ -754,12 +754,22 @@ def _find_targeted_packages(strings: list[str], own_package: str = "",
 
 
 def analyze_dex(apk_path: str, own_package: str = "", permissions=()) -> dict:
+    """analyze_dex_bytes for a file on disk - what the live pipeline calls."""
     try:
         with open(apk_path, "rb") as f:
             apk_bytes = f.read()
     except Exception as e:
         return {"error": str(e)}
+    return analyze_dex_bytes(apk_bytes, own_package, permissions)
 
+
+def analyze_dex_bytes(apk_bytes: bytes, own_package: str = "", permissions=()) -> dict:
+    """The analysis itself, over bytes already in memory.
+
+    Split out from analyze_dex so backfill_ai.py can run it on a sample pulled
+    straight from MWDB without writing the APK to disk first - on Windows
+    Defender flags saved malware and then blocks reopening the file.
+    """
     strings = _extract_dex_strings(apk_bytes)
     infra = _analyze_entropy_and_libs(apk_bytes)
     # Strings from .so go through the same regexes: C2 hidden in native code
