@@ -362,14 +362,39 @@ def parse_apk_timeout(apk_path: str, timeout: int = 90) -> dict:
     Guards against a crafted AndroidManifest.xml (AXML bombing) that hangs
     androguard's parser forever as an anti-analysis technique. Past the
     deadline the process is killed and we try the apktool fallback.
+
+    A manifest androguard REFUSES also gets that fallback. It used not to:
+    a parse error raised straight out of here, so the third path this module's
+    docstring promises was reachable only after a timeout. That cost us
+    a2b0870d on 2026-10-14, whose namespace URI was
+    "http://schemas.<cyrillic+greek homoglyphs>.mob/" - androguard rejects a
+    non-ASCII URI, the raw-bytes retry inside parse_apk rejects it for the same
+    reason, and the sample left the run with no database row and no IOCs at
+    all. apktool decodes AXML with unrelated code, so it is worth the attempt.
     """
     try:
         return run_isolated(parse_apk, (apk_path,), timeout=timeout)
     except IsolationTimeout:
+        why = f"androguard exceeded the {timeout}s limit"
         print(f"  [~] androguard timed out after {timeout}s, trying apktool fallback...")
-        return parse_apk_apktool(apk_path)
     except IsolationError as e:
-        raise ValueError(str(e).splitlines()[-1])
+        # run_isolated hands back a formatted traceback; the useful part is its
+        # last line, "SomeError: message". Drop the class name or the combined
+        # error below reads "ValueError: ValueError: Failed to parse ...".
+        why = str(e).splitlines()[-1]
+        klasa, sep, reszta = why.partition(": ")
+        if sep and klasa.replace(".", "").isidentifier():
+            why = reszta
+        print("  [~] androguard rejected the manifest, trying apktool fallback...")
+
+    try:
+        return parse_apk_apktool(apk_path)
+    except Exception as e:
+        # Name BOTH failures. apktool's message alone hides why androguard
+        # bailed, and androguard's alone hides that a fallback even ran - and
+        # the difference between "my jar is missing" and "this manifest beats
+        # both decoders" is the whole diagnostic value of this line.
+        raise ValueError(f"{why}; apktool fallback also failed: {e}")
 
 
 def parse_apk(apk_path: str) -> dict:
