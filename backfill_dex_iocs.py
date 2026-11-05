@@ -18,20 +18,29 @@ The sample never touches the disk: on Windows, Defender flags saved malware and
 then blocks reopening the file. Parsing runs from memory, in a child process
 under a timeout.
 
+Speed: each sample is one MWDB download (network I/O) plus one isolated parse
+that does the manifest AND the DEX analysis in a single child process - one
+androguard import instead of two. A thread pool overlaps the downloads and the
+subprocess waits across --workers samples at once; all database writes stay on
+the main thread, so SQLite is only ever touched by one thread.
+
 Usage:
-    python backfill_dex_iocs.py                      # preview, downloads nothing
-    python backfill_dex_iocs.py --apply              # fetch and backfill
-    python backfill_dex_iocs.py --apply --limit 20   # only 20 samples (a test run)
+    python backfill_dex_iocs.py                       # preview, downloads nothing
+    python backfill_dex_iocs.py --apply               # fetch and backfill
+    python backfill_dex_iocs.py --apply --workers 8   # more parallelism
+    python backfill_dex_iocs.py --apply --limit 20    # only 20 samples (a test)
 
 The script is resumable: every processed sample is recorded in a progress table,
 so a later run continues where the last one stopped. An interrupted run keeps
-everything it committed.
+everything it committed; in-flight samples are simply redone next time.
 """
 import hashlib
 import os
 import shutil
 import sqlite3
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 
 from isolation import run_isolated
@@ -47,13 +56,78 @@ DB = os.path.join("output", "threat_intel.db")
 # would be churn with no new information.
 _BACKFILL_TYPES = ("domain", "targeted_app")
 
+_DEFAULT_WORKERS = 6
+
+# Per-sample parse budget. A handful of samples (big obfuscated VPN apps with
+# huge native libs - the org.newvpn cluster) never parse inside any sane limit;
+# at 120s a worker gives up fast enough to stay useful, and such a sample is
+# recorded done-with-error so the backfill terminates instead of re-downloading
+# and re-timing-out it on every run.
+_PARSE_TIMEOUT = 120
+
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
 
+# ── The work done per sample, off the main thread ─────────────────────────────
+
+def _parse_and_analyze(apk_bytes: bytes) -> dict:
+    """Manifest + DEX in ONE child process (run under run_isolated).
+
+    Doing both here, rather than in two separate isolated calls, halves the
+    per-sample cost: androguard is imported once, not twice, and only one
+    subprocess is spawned. targeted_packages needs the manifest's permissions
+    and own_package, so the manifest is parsed first.
+
+    Returns only the two fields this backfill cares about, as plain lists so the
+    result pickles cleanly back from the child.
+    """
+    manifest = parse_apk_bytes(apk_bytes)
+    own_pkg = manifest.get("package") or ""
+    perms = tuple(manifest.get("permissions") or ())
+    dex = analyze_dex_bytes(apk_bytes, own_pkg, perms)
+    return {
+        "domains": dex.get("domains", []) or [],
+        "targeted": dex.get("targeted_packages", []) or [],
+        "error": dex.get("error"),
+    }
+
+
+_thread_local = threading.local()
+
+
+def _client():
+    """One MWDB client per worker thread - requests sessions are not meant to be
+    shared across threads, and a thread pool would otherwise race on one."""
+    c = getattr(_thread_local, "mwdb", None)
+    if c is None:
+        c = _thread_local.mwdb = get_client()
+    return c
+
+
+def _fetch_and_parse(sha256: str):
+    """Download one sample and re-derive its domains + target list, in memory.
+
+    Runs on a worker thread. Returns (sha256, result_dict, None) or, on failure,
+    (sha256, None, error_message). No database access here - the main thread
+    owns the connection.
+    """
+    try:
+        data = _client().query_file(sha256).download()
+        if hashlib.sha256(data).hexdigest() != sha256:
+            return sha256, None, "downloaded file has a mismatched SHA-256"
+        res = run_isolated(_parse_and_analyze, (data,), timeout=_PARSE_TIMEOUT)
+        if res.get("error"):
+            return sha256, None, str(res["error"])
+        return sha256, res, None
+    except Exception as e:  # download / isolation / parse failure for this one
+        return sha256, None, str(e)
+
+
+# ── Database side, main thread only ───────────────────────────────────────────
+
 def backup_database():
-    """Copy the database next to itself with a timestamp, return the new name."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     target = f"{DB}.bak-{stamp}"
     shutil.copy2(DB, target)
@@ -62,16 +136,22 @@ def backup_database():
 
 def ensure_progress_table(conn):
     """A sample is 'done' once it appears here, whether or not it yielded new
-    IOCs - otherwise a clean sample would be re-downloaded on every run."""
+    IOCs - otherwise a clean sample would be re-downloaded on every run. A
+    sample that could not be parsed is recorded too, with the reason in `error`,
+    so it is attempted once and never again."""
     conn.execute(
         "CREATE TABLE IF NOT EXISTS dex_backfill_done ("
-        "sha256 TEXT PRIMARY KEY, done_at TEXT)"
+        "sha256 TEXT PRIMARY KEY, done_at TEXT, error TEXT)"
     )
+    # Legacy table from an earlier run had no error column.
+    try:
+        conn.execute("ALTER TABLE dex_backfill_done ADD COLUMN error TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already there
     conn.commit()
 
 
 def pending_samples(conn, limit=None):
-    """Samples not yet processed by this backfill, newest first."""
     conn.row_factory = sqlite3.Row
     sql = ("SELECT s.sha256, s.package, s.filename FROM samples s "
            "WHERE s.sha256 NOT IN (SELECT sha256 FROM dex_backfill_done) "
@@ -80,28 +160,6 @@ def pending_samples(conn, limit=None):
         sql += f" LIMIT {int(limit)}"
     rows = conn.execute(sql).fetchall()
     return [dict(r) for r in rows]
-
-
-def reparse_sample(mwdb, sha256):
-    """Fetch one sample and re-derive its domains + target list, in memory.
-
-    Returns (domains, targeted_packages). Raises on download or hash mismatch;
-    a parse that fails inside the isolated child is reported by the caller.
-    """
-    data = mwdb.query_file(sha256).download()
-    if hashlib.sha256(data).hexdigest() != sha256:
-        raise ValueError("downloaded file has a mismatched SHA-256")
-
-    # targeted_packages is gated on the manifest's permissions, and own_package
-    # keeps a sample off its own target list, so the manifest is parsed first.
-    manifest = run_isolated(parse_apk_bytes, (data,), timeout=90)
-    own_pkg = manifest.get("package") or ""
-    perms = tuple(manifest.get("permissions") or ())
-
-    dex = run_isolated(analyze_dex_bytes, (data, own_pkg, tuple(perms)), timeout=120)
-    if dex.get("error"):
-        raise ValueError(dex["error"])
-    return dex.get("domains", []) or [], dex.get("targeted_packages", []) or []
 
 
 def existing_iocs(conn, sha256):
@@ -116,11 +174,60 @@ def existing_iocs(conn, sha256):
     }
 
 
+def _store(conn, sha256, res):
+    """Insert the missing domain / targeted_app rows for one sample and mark it
+    done. Returns (new_domains, new_pl_domains, new_targets)."""
+    have = existing_iocs(conn, sha256)
+    now = _now()
+    new_rows, n_pl = [], 0
+    for dom in res["domains"]:
+        value = _normalize_ioc("domain", dom)
+        if ("domain", value) not in have:
+            new_rows.append(("domain", value))
+            have.add(("domain", value))
+            if value.endswith(".pl"):
+                n_pl += 1
+    for pkg in res["targeted"]:
+        value = _normalize_ioc("targeted_app", pkg)
+        if ("targeted_app", value) not in have:
+            new_rows.append(("targeted_app", value))
+            have.add(("targeted_app", value))
+
+    for ioc_type, value in new_rows:
+        conn.execute(
+            "INSERT INTO iocs (sha256, ioc_type, value, first_seen) VALUES (?, ?, ?, ?)",
+            (sha256, ioc_type, value, now),
+        )
+    conn.execute(
+        "INSERT OR REPLACE INTO dex_backfill_done (sha256, done_at, error) "
+        "VALUES (?, ?, NULL)",
+        (sha256, now),
+    )
+    conn.commit()
+    n_dom = sum(1 for t, _ in new_rows if t == "domain")
+    n_tgt = sum(1 for t, _ in new_rows if t == "targeted_app")
+    return n_dom, n_pl, n_tgt
+
+
+def _mark_error(conn, sha256, err):
+    """Record a sample we could not parse as done, with the reason, so it is
+    tried once and not re-downloaded on every later run."""
+    conn.execute(
+        "INSERT OR REPLACE INTO dex_backfill_done (sha256, done_at, error) "
+        "VALUES (?, ?, ?)",
+        (sha256, _now(), err[:200]),
+    )
+    conn.commit()
+
+
 def main():
     apply_ = "--apply" in sys.argv
     limit = None
     if "--limit" in sys.argv:
         limit = int(sys.argv[sys.argv.index("--limit") + 1])
+    workers = _DEFAULT_WORKERS
+    if "--workers" in sys.argv:
+        workers = max(1, int(sys.argv[sys.argv.index("--workers") + 1]))
 
     conn = sqlite3.connect(DB)
     ensure_progress_table(conn)
@@ -137,7 +244,7 @@ def main():
             print(f"   ... and {len(targets) - 10} more")
         print()
         print("Every sample is downloaded from MWDB, so this takes a while.")
-        print("Run with --apply to execute.")
+        print(f"Run with --apply to execute (default {_DEFAULT_WORKERS} parallel workers).")
         conn.close()
         return
 
@@ -148,83 +255,60 @@ def main():
 
     conn.close()  # reopen after the backup so the file is quiescent when copied
     print("Database backup:", backup_database())
+    print(f"Workers: {workers}")
     print()
 
-    mwdb = get_client()
     conn = sqlite3.connect(DB)
-
+    labels = {r["sha256"]: (r["package"] or r["filename"] or r["sha256"][:16])
+              for r in targets}
+    total = len(targets)
     stats = {"samples": 0, "domains": 0, "pl_domains": 0, "targets": 0,
              "with_new": 0, "error": 0}
+    i = 0
+    pool = ThreadPoolExecutor(max_workers=workers)
     try:
-        for i, r in enumerate(targets, 1):
-            sha256 = r["sha256"]
-            label = r["package"] or r["filename"] or sha256[:16]
-            try:
-                domains, targeted = reparse_sample(mwdb, sha256)
-            except Exception as e:
+        futures = {pool.submit(_fetch_and_parse, r["sha256"]): r["sha256"]
+                   for r in targets}
+        for fut in as_completed(futures):
+            i += 1
+            sha256, res, err = fut.result()
+            label = labels.get(sha256, sha256[:16])[:34]
+            if err:
                 stats["error"] += 1
-                print("  [%d/%d] %-34s ERROR: %s" % (i, len(targets), label[:34], str(e)[:60]))
+                _mark_error(conn, sha256, err)  # done-with-error: never retried
+                print("  [%d/%d] %-34s ERROR: %s" % (i, total, label, err[:60]))
                 continue
-
-            have = existing_iocs(conn, sha256)
-            now = _now()
-            new_rows, n_pl = [], 0
-            for dom in domains:
-                value = _normalize_ioc("domain", dom)
-                if ("domain", value) not in have:
-                    new_rows.append(("domain", value))
-                    have.add(("domain", value))
-                    if value.endswith(".pl"):
-                        n_pl += 1
-            for pkg in targeted:
-                value = _normalize_ioc("targeted_app", pkg)
-                if ("targeted_app", value) not in have:
-                    new_rows.append(("targeted_app", value))
-                    have.add(("targeted_app", value))
-
-            for ioc_type, value in new_rows:
-                conn.execute(
-                    "INSERT INTO iocs (sha256, ioc_type, value, first_seen) "
-                    "VALUES (?, ?, ?, ?)",
-                    (sha256, ioc_type, value, now),
-                )
-            conn.execute(
-                "INSERT OR REPLACE INTO dex_backfill_done (sha256, done_at) VALUES (?, ?)",
-                (sha256, now),
-            )
-            conn.commit()
-
-            n_dom = sum(1 for t, _ in new_rows if t == "domain")
-            n_tgt = sum(1 for t, _ in new_rows if t == "targeted_app")
+            n_dom, n_pl, n_tgt = _store(conn, sha256, res)
             stats["samples"] += 1
             stats["domains"] += n_dom
             stats["pl_domains"] += n_pl
             stats["targets"] += n_tgt
-            if new_rows:
-                stats["with_new"] += 1
             note = ""
             if n_dom or n_tgt:
+                stats["with_new"] += 1
                 parts = []
                 if n_dom:
                     parts.append(f"+{n_dom} domain" + (f" ({n_pl} .pl)" if n_pl else ""))
                 if n_tgt:
                     parts.append(f"+{n_tgt} targeted_app")
                 note = "  " + ", ".join(parts)
-            print("  [%d/%d] %-34s%s" % (i, len(targets), label[:34], note))
+            print("  [%d/%d] %-34s%s" % (i, total, label, note))
     except KeyboardInterrupt:
         print()
-        print("Interrupted. Everything done so far is committed - just run it again.")
+        print("Interrupted. Everything stored so far is committed - just run it again.")
+        pool.shutdown(wait=False, cancel_futures=True)
     finally:
+        pool.shutdown(wait=False, cancel_futures=True)
         conn.close()
 
     print()
     print("Summary:")
-    print("   samples processed   %d" % stats["samples"])
-    print("   samples gaining IOCs %d" % stats["with_new"])
-    print("   new domain rows     %d  (of which .pl: %d)" % (stats["domains"], stats["pl_domains"]))
+    print("   samples processed     %d" % stats["samples"])
+    print("   samples gaining IOCs   %d" % stats["with_new"])
+    print("   new domain rows       %d  (of which .pl: %d)" % (stats["domains"], stats["pl_domains"]))
     print("   new targeted_app rows %d" % stats["targets"])
     if stats["error"]:
-        print("   errors              %d" % stats["error"])
+        print("   errors                %d" % stats["error"])
 
 
 if __name__ == "__main__":
