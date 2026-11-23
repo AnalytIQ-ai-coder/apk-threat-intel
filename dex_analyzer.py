@@ -16,7 +16,7 @@ from androguard.core.dex import DEX
 _URL_RE = re.compile(r'https?://[^\s\'"<>]{6,}', re.IGNORECASE)
 _IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{2,5})?\b')
 _DOMAIN_RE = re.compile(
-    r'\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|ru|cn|tk|top|xyz|info|biz|co|dev)\b',
+    r'\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|ru|cn|tk|top|xyz|info|biz|co|dev|pl)\b',
     re.IGNORECASE,
 )
 _PKG_RE = re.compile(r'\b([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*){2,})\b')
@@ -46,7 +46,7 @@ _DOMAIN_FALSE_POSITIVES = {"dispatchers.io"}
 # ends with one. That single criterion drops package tails without a blocklist.
 _TLD_TOKENS = frozenset({
     "com", "net", "org", "io", "ru", "cn", "tk", "top", "xyz",
-    "info", "biz", "co", "dev",
+    "info", "biz", "co", "dev", "pl",
 })
 
 # The subset used to spot reversed DNS from the FIRST label. Deliberately
@@ -63,7 +63,16 @@ _TLDS_STARTING_A_PACKAGE = frozenset({
 # and of 63 ".info" domains about five are. They can NOT be dropped wholesale -
 # poker-rooms.top and cln9vhvfo2.top are live C2 - so instead we raise the bar
 # for them inside _domain_is_ioc.
-_TLDS_COLLIDING_WITH_CODE = frozenset({"top", "info", "xyz", "io", "tk"})
+#
+# ".pl" (Poland) is added here, not to the plain alternation alone: the regex
+# needs it so a bare Polish C2 host like "mbank-weryfikacja.pl" becomes a domain
+# IOC at all (before, .pl survived only inside a full URL), but "pl" is also a
+# two-letter token that turns up in code and file names (Perl .pl, minified
+# vars), so it takes the same raised bar as io/tk. The cost is measured and
+# acceptable: short alphabetic second-level labels fall (wp.pl, o2.pl is alnum
+# and stays), but a bank-phishing host is never two letters, and the portals we
+# drop are benign noise that still survive inside URLs via _URL_RE.
+_TLDS_COLLIDING_WITH_CODE = frozenset({"top", "info", "xyz", "io", "tk", "pl"})
 
 # Property and object names that ".top" or ".info" tends to follow in code.
 # Checked against EVERY label, because the pattern nests

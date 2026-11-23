@@ -41,9 +41,10 @@ CREATE TABLE IF NOT EXISTS samples (
 CREATE TABLE IF NOT EXISTS iocs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     sha256 TEXT NOT NULL,
-    ioc_type TEXT NOT NULL,   -- url, ip, domain, btc, eth, tron, telegram,
-                              -- whatsapp, discord_webhook, github_deaddrop,
-                              -- firebase_rtdb, pages_dev, workers_dev, bitbucket
+    ioc_type TEXT NOT NULL,   -- url, ip, domain, targeted_app, btc, eth, tron,
+                              -- telegram, whatsapp, discord_webhook,
+                              -- github_deaddrop, firebase_rtdb, pages_dev,
+                              -- workers_dev, bitbucket
     value TEXT NOT NULL,
     first_seen TEXT,
     FOREIGN KEY (sha256) REFERENCES samples(sha256)
@@ -188,6 +189,14 @@ def store_sample(data: dict, iocs: dict) -> dict:
             flat.append(("ip", ip))
         for dom in dex.get("domains", []) or []:
             flat.append(("domain", dom))
+        # The overlay / injection target list - which other apps this sample is
+        # built to attack. It is the single best indicator of a banker's target
+        # country, and until now lived only in results.json, overwritten every
+        # run. Persisting it makes "which samples target pl.mbank" a query, and
+        # it correlates across samples through the generic path below, exposing
+        # campaigns that share a target list.
+        for tp in dex.get("targeted_packages", []) or []:
+            flat.append(("targeted_app", tp))
 
         if iocs and not iocs.get("error"):
             for kind, values in iocs.get("wallets", {}).items():
